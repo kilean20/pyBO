@@ -464,7 +464,7 @@ def _init_population_qmc(n, d, qmc_engine='sobol',seed=None):
 
 
             
-def proximal_ordered_init_sampler(n,bounds,x0,ramping_rate,polarity_chage_time=10,method='sobol',seed=None):
+def proximal_ordered_init_sampler(n,bounds,x0,ramping_rate,polarity_change_time=10,method='sobol',seed=None):
     if n==0:
         return None
     bounds = np.array(bounds,dtype=np.float64)
@@ -479,7 +479,7 @@ def proximal_ordered_init_sampler(n,bounds,x0,ramping_rate,polarity_chage_time=1
     x0_ = x0
     while len(ordered_samples)<n:
         pop = np.array(samples)
-        distance = polarity_chage_time*np.any(np.sign(pop) != np.sign(x0_), axis=1) + np.max( np.abs(pop-x0_)/ramping_rate, axis=1)
+        distance = polarity_change_time*np.any(np.sign(pop) != np.sign(x0_), axis=1) + np.max( np.abs(pop-x0_)/ramping_rate, axis=1)
         ordered_samples.append(samples.pop(np.argmin(distance)))
         x0_ = ordered_samples[-1]
         
