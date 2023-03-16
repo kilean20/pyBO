@@ -18,8 +18,9 @@ def penalize_X(
     f = np.zeros(b)
     if X_penal is not None:
         X_penal = np.atleast_2d(X_penal)
+        _,d = X_penal.shape
         for i in range(b):
-            f[i] = - np.mean(C_penal*np.exp(-np.mean((X[i:i+1,:]-X_penal)**2/L_penal**2, axis=1)))
+            f[i] = - np.mean(C_penal*np.exp(-np.mean((X[i:i+1,-d:]-X_penal)**2/L_penal**2, axis=1)))
     return f
 
 
@@ -37,8 +38,9 @@ def favor_X(
         if f is None:
             f = np.zeros(b)
         X_favor = np.atleast_2d(X_favor)
+        _,d = X_favor.shape
         for i in range(b):
-            f[i] =   np.mean(C_favor*np.exp(-np.mean((X[i:i+1,:]-X_favor)**2/L_favor**2, axis=1)))
+            f[i] =   np.mean(C_favor*np.exp(-np.mean((X[i:i+1,-d:]-X_favor)**2/L_favor**2, axis=1)))
     return f
     
 
@@ -48,10 +50,13 @@ def penalize_polarity_change(
     polarity_penalty = 0.,
     ) -> np.ndarray:
     
-    if polarity_penalty == 0 or X_current is None :
+    X = np.atleast_2d(X)
+    if polarity_penalty == 0 or polarity_penalty is None or X_current is None :
         return 0.
     else:
-        return polarity_penalty*np.any(np.sign(X) != np.sign(X_current), axis=1)
+        X_current = np.atleast_2d(X_current)
+        _,d = X_current.shape
+        return polarity_penalty*np.any(np.logical_and(np.sign(X) != np.sign(X_current),X_current!=0), axis=1)
     
 
 class AcquisitionFunction:
@@ -148,11 +153,12 @@ class UpperConfidenceBound(AcquisitionFunction):
         """
         super().__init__(model=model)
         self.name = 'UpperConfidenceBound'
+        self.beta = beta
 
 
     def __call__(self, 
                     X: np.ndarray, 
-                    beta: float,
+                    beta: Optional[float] = None,
                     X_penal: Optional[np.ndarray] = None,
                     L_penal: Optional[Union[np.ndarray, float]] = 0.1,
                     C_penal: Optional[float] = 0.2,
@@ -165,6 +171,9 @@ class UpperConfidenceBound(AcquisitionFunction):
 #         self.beta = beta or self.beta
 #         if beta is None:
 #             raise TypeError("beta could not be inferred. UpperConfidenceBound requires beta")
+        beta = beta or self.beta
+        if beta is None:
+            beta = 0
         mean, var = self.model(X,return_var=True)
         f = mean + (beta*var)**0.5
         

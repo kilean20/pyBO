@@ -7,6 +7,8 @@ from scipy import optimize
 from scipy.optimize import OptimizeResult
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
+Auto = 'Auto'
+
 
 def defaultKeyVal(d,k,v):
   if k in d.keys():
@@ -185,6 +187,7 @@ def progressbar(it, prefix="", size=40, out=sys.stdout): # Python3.6+
 def minimize_with_restarts(
     fun, 
     bounds, 
+    x0 = None,
     num_restarts=100, 
     method=None,
     jac=None,
@@ -220,8 +223,11 @@ def minimize_with_restarts(
             timeout_sec_ = timeout_sec - (time.monotonic() - start_time)
         else:
             timeout_sec_ = None
-            
-        x0 = np.random.rand(xdim)*(bounds[:,1]-bounds[:,0])+bounds[:,0]
+        
+        if x0 is not None and i_restart==0:
+            x0 = x0
+        else:
+            x0 = np.random.rand(xdim)*(bounds[:,1]-bounds[:,0])+bounds[:,0]
         result = minimize_with_timeout(
                     fun,
                     x0,
@@ -234,7 +240,7 @@ def minimize_with_restarts(
                     tol,
                     callback,
                     options,
-                    timeout_sec,)
+                    timeout_sec_,)
         
         if result.success:
             assert type(result.x) == np.ndarray
@@ -247,11 +253,11 @@ def minimize_with_restarts(
                 candidates['fail']['fun'].append(result.fun)               
     
     success = True
-    if len(candidates['success'])>1:
+    if len(candidates['success']['fun'])>=1:
         i = np.argmin(candidates['success']['fun'])
         x = candidates['success']['x'][i]
         fun = candidates['success']['fun'][i]
-    elif len(candidates['fail'])>1:
+    elif len(candidates['fail']['fun'])>=1:
         i = np.argmin(candidates['fail']['fun'])
         x = candidates['fail']['x'][i]
         fun = candidates['fail']['fun'][i]
@@ -272,6 +278,7 @@ def minimize_with_restarts(
 def maximize_with_restarts(
     fun, 
     bounds, 
+    x0 = None,
     num_restarts=100, 
     method=None,
     jac=None,
@@ -297,6 +304,7 @@ def maximize_with_restarts(
     return minimize_with_restarts(
         neg_fun, 
         bounds, 
+        x0,
         num_restarts, 
         method, 
         neg_jac, 
@@ -329,30 +337,34 @@ def plot_2D_projection(
         '''
         fixed_values_for_each_dim: dict of key: dimension, val: value to fix for that dimension
         '''
-        if fixed_values_for_each_dim is None:
-            project_fixed_values = False
-        else:
-            project_fixed_values = True
-        assert project_minimum + project_maximum + project_mean + project_fixed_values == 1
         
-  
-        dim = len(bounds)
-        if dim > 2:
-            batch_size = 1
-            for n in range(dim-2):
-                batch_size*=grid_ponits_each_dim
-                if batch_size*dim > 2e4:
-                    if overdrive or not (project_minimum or project_mean):
-                        batch_size = int(batch_size/grid_ponits_each_dim)
-                        print("starting projection plot...")
-                        break
-                    else:
-                        raise RuntimeError("Aborting: due to high-dimensionality and large number of grid point, minimum or mean projection plot may take long time. Try to reduce 'grid_ponits_each_dim' or turn on 'overdrive' if long time waiting is OK'")
-            n_batch = int(grid_ponits_each_dim**(dim-2)/batch_size)
-                  
+        n_fixed = 0
+        if fixed_values_for_each_dim is not None:
+            n_fixed = len(fixed_values_for_each_dim.keys())
+            assert dim_xaxis not in fixed_values_for_each_dim.keys()
+            assert dim_yaxis not in fixed_values_for_each_dim.keys()
+        else:
+            fixed_values_for_each_dim = {}
+            
+        dim = len(bounds)    
+        if dim > 2+n_fixed:
+            assert project_minimum + project_maximum + project_mean == 1
+        
+        batch_size = 1
+        for n in range(dim-2-n_fixed):
+            batch_size*=grid_ponits_each_dim
+            if batch_size*dim > 2e4:
+                if overdrive or not (project_minimum or project_mean):
+                    batch_size = int(batch_size/grid_ponits_each_dim)
+                    print("starting projection plot...")
+                    break
+                else:
+                    raise RuntimeError("Aborting: due to high-dimensionality and large number of grid point, minimum or mean projection plot may take long time. Try to reduce 'grid_ponits_each_dim' or turn on 'overdrive' if long time waiting is OK'")
+        n_batch = int(grid_ponits_each_dim**(dim-n_fixed-2)/batch_size)
         linegrid = np.linspace(0,1,grid_ponits_each_dim)
         x_grid = np.zeros((grid_ponits_each_dim*grid_ponits_each_dim,dim))
         y_grid = np.zeros((grid_ponits_each_dim*grid_ponits_each_dim))
+        
         n = 0
         for i in progressbar(range(grid_ponits_each_dim)):
             bounds_xaxis = bounds[dim_xaxis,:]
@@ -360,18 +372,19 @@ def plot_2D_projection(
                 bounds_yaxis = bounds[dim_yaxis,:]
                 x_grid[n,dim_xaxis] = linegrid[i]*(bounds_xaxis[1]-bounds_xaxis[0])+bounds_xaxis[0]
                 x_grid[n,dim_yaxis] = linegrid[j]*(bounds_yaxis[1]-bounds_yaxis[0])+bounds_yaxis[0]
-                if (project_minimum or project_maximum or project_mean) and dim > 2:
+                if (project_minimum or project_maximum or project_mean) and dim > 2+n_fixed:
                     inner_grid = []
                     for d in range(dim):
                         if d == dim_xaxis:
                             inner_grid.append([x_grid[n,dim_xaxis]])
                         elif d == dim_yaxis:
                             inner_grid.append([x_grid[n,dim_yaxis]])
+                        elif d in fixed_values_for_each_dim.keys():
+                            inner_grid.append([fixed_values_for_each_dim[d]])
                         else:
                             inner_grid.append(np.linspace(bounds[d,0],
                                                           bounds[d,1],
-                                                          grid_ponits_each_dim)) 
-                    
+                                                          grid_ponits_each_dim))
                     inner_grid = np.meshgrid(*inner_grid)
                     inner_grid = np.array(list(list(x.flat) for x in inner_grid),dtype=dtype).T
                     
@@ -392,10 +405,10 @@ def plot_2D_projection(
                         y_grid[n] = y[iproj]
                         x_grid[n,:] = inner_grid[iproj]
                     elif project_mean:
-                        y_grid[n] = np.nanmean(y_mean)                
+                        y_grid[n] = np.nanmean(y_mean)
                 n+=1
-        
-        if (not (project_minimum or project_maximum or project_mean)) or dim==2:
+                
+        if dim==2+n_fixed:
             if fixed_values_for_each_dim is not None:
                 for dim,val in fixed_values_for_each_dim.items():
                     x_grid[:,dim]  = val   
@@ -404,13 +417,14 @@ def plot_2D_projection(
         iNaN = np.any([np.isnan(x_grid).any(axis=1),np.isnan(y_grid)],axis=0)
         x_grid = x_grid[~iNaN,:]
         y_grid = y_grid[~iNaN]
+
                            
         if ax is None:
             fig, ax = plt.subplots(figsize=(3.5,3))
         cs = ax.tricontourf(x_grid[:,dim_xaxis], x_grid[:,dim_yaxis], y_grid, levels=64, cmap="viridis");
         fig.colorbar(cs,ax=ax,shrink=0.95)
         
-        
+
         
         
             
@@ -464,7 +478,12 @@ def _init_population_qmc(n, d, qmc_engine='sobol',seed=None):
 
 
             
-def proximal_ordered_init_sampler(n,bounds,x0,ramping_rate,polarity_change_time=10,method='sobol',seed=None):
+def proximal_ordered_init_sampler(n,
+                                  bounds,
+                                  x0,
+                                  ramping_rate,
+                                  polarity_change_time=10,
+                                  method='sobol',seed=None):
     if n==0:
         return None
     bounds = np.array(bounds,dtype=np.float64)
