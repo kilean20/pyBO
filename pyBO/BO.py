@@ -12,7 +12,7 @@ import concurrent
 
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Type, Union
 
-from . import model
+from . import model as Model
 from . import covfunc
 from . import acquisition
 from . import util
@@ -52,7 +52,7 @@ class BO:
         
         self.prior_mean_model = prior_mean_model
         if model is None:
-            self.model = GaussianProcess(covfunc.matern52(),prior_mean_model=prior_mean_model)
+            self.model = Model.GaussianProcess(covfunc.matern52(),prior_mean_model=prior_mean_model)
         else:
             model.prior_mean_model = prior_mean_model
             self.model = model
@@ -576,7 +576,7 @@ class BO:
             else:
                 print("model function at epoch "+str(epoch)+" is not saved into memory. Trying to restore based on training data. Restoration will not be exactly same.")
 
-                model = model.GaussianProcess(covfunc.matern52())
+                model = Model.GaussianProcess(covfunc.matern52())
                 model.fit(x,y)
         
         def func(x):
@@ -679,7 +679,7 @@ class BO:
         if type(acquisition_func) is str:
             model = self.history[epoch]['model']
             if model is None or type(model)==str:
-                model = model.GaussianProcess(covfunc.matern52())
+                model = Model.GaussianProcess(covfunc.matern52())
                 model.fit(x,y)
             if acquisition_func in ['EI','ExpectedImprovement']:
                 acquisition_func = acquisition.ExpectedImprovement(model)
