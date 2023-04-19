@@ -771,7 +771,7 @@ class BO:
                 if L_penal is None:
                     L_penal = 0.5*L
                 if C_penal is None:
-                    C_penal = 0.2*C
+                    C_penal = 0.4*C
                     
         if X_favor is not None and x is not None:
             X_favor = np.atleast_2d(X_favor)

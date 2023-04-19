@@ -1,10 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 import numpy as np
-from scipy.linalg import cholesky, solve
 from collections import OrderedDict
 from scipy.optimize import minimize
 from typing import Any
+
+try:
+    from scipy.linalg import cholesky, solve
+except:
+    from numpy.linalg import cholesky, solve
+
 eps = 1e-6
 
 class Model(ABC):

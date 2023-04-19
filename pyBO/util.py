@@ -452,6 +452,97 @@ def plot_2D_projection(
 #     return population
 
 
+def _rightmost_zero(n):
+    """Position of the lowest 0-bit in the binary representation of integer `n`."""
+    s = np.binary_repr(n)
+    i = s[::-1].find("0")
+    if i == -1:
+        i = len(s)
+    return i
+
+
+def _generator(dimension, skip=0):
+    """Generator for the Sobol sequence"""
+    DIMS = 23  # maximum number of dimensions
+    BITS = 30  # maximum number of bits
+
+    if not (1 <= dimension <= DIMS):
+        raise ValueError("Sobol: dimension must be between 1 and %i." % DIMS)
+
+    # initialize direction numbers
+    V = np.zeros((DIMS, BITS), dtype=int)
+    data = np.array([
+                        [7,1,1,0,0,0,0,0,0,0,0,0,0,0],
+                        [11,1,3,7,0,0,0,0,0,0,0,0,0,0],
+                        [13,1,1,5,0,0,0,0,0,0,0,0,0,0],
+                        [19,1,3,1,1,0,0,0,0,0,0,0,0,0],
+                        [25,1,1,3,7,0,0,0,0,0,0,0,0,0],
+                        [37,1,3,3,9,9,0,0,0,0,0,0,0,0],
+                        [59,1,3,7,13,3,0,0,0,0,0,0,0,0],
+                        [47,1,1,5,11,27,0,0,0,0,0,0,0,0],
+                        [61,1,3,5,1,15,0,0,0,0,0,0,0,0],
+                        [55,1,1,7,3,29,0,0,0,0,0,0,0,0],
+                        [41,1,3,7,7,21,0,0,0,0,0,0,0,0],
+                        [67,1,1,1,9,23,37,0,0,0,0,0,0,0],
+                        [97,1,3,3,5,19,33,0,0,0,0,0,0,0],
+                        [91,1,1,3,13,11,7,0,0,0,0,0,0,0],
+                        [109,1,1,7,13,25,5,0,0,0,0,0,0,0],
+                        [103,1,3,5,11,7,11,0,0,0,0,0,0,0],
+                        [115,1,1,1,3,13,39,0,0,0,0,0,0,0],
+                        [131,1,3,1,15,17,63,13,0,0,0,0,0,0],
+                        [193,1,1,5,5,1,59,33,0,0,0,0,0,0],
+                        [137,1,3,3,3,25,17,115,0,0,0,0,0,0],
+                        [145,1,1,7,15,29,15,41,0,0,0,0,0,0],
+                        [143,1,3,1,7,3,23,79,0,0,0,0,0,0],
+                        [241,1,3,7,9,31,29,17,0,0,0,0,0,0],
+                    ], dtype=int)
+    poly = data[:, 0]
+    V[:, :13] = data[:, 1:14]
+    V[0, :] = 1
+    for i in range(1, dimension):
+        m = len(np.binary_repr(poly[i])) - 1
+        include = np.array([int(b) for b in np.binary_repr(poly[i])[1:]])
+        for j in range(m, BITS):
+            V[i, j] = V[i, j - m]
+            for k in range(m):
+                if include[k]:
+                    V[i, j] = np.bitwise_xor(V[i, j], 2 ** (k + 1) * V[i, j - k - 1])
+    V = V[:dimension] * 2 ** np.arange(BITS)[::-1]
+
+    point = np.zeros(dimension, dtype=int)
+
+    # fast-forward
+    for i in range(skip):
+        point = np.bitwise_xor(point, V[:, _rightmost_zero(i)])
+
+    # start sampling
+    for i in range(skip, 2 ** BITS):
+        point = np.bitwise_xor(point, V[:, _rightmost_zero(i)])
+        yield point / 2 ** BITS
+
+
+def _get_sobol_sample(n_points, dimension,skip=0):
+    """Generate a Sobol point set.
+    Parameters
+    ----------
+    dimension : int
+        Number of dimensions
+    n_points : int, optional
+        Number of points to sample
+    skip : int, optional
+        Number of points in the sequence to skip, by default 0
+    Returns
+    -------
+    array, shape=(n_points, dimension)
+        Samples from the Sobol sequence.
+    """
+    sobol = _generator(dimension, skip)
+    points = np.empty((n_points, dimension))
+    for i in range(n_points):
+        points[i] = next(sobol)
+    return points
+
+
 def _init_population_qmc(n, d, qmc_engine='sobol',seed=None):
     """Initializes the population with a QMC method.
     QMC methods ensures that each parameter is uniformly
@@ -462,20 +553,23 @@ def _init_population_qmc(n, d, qmc_engine='sobol',seed=None):
         The QMC method to use for initialization. Can be one of
         ``latinhypercube``, ``sobol`` or ``halton``.
     """
-    from scipy.stats import qmc
+    try:
+        from scipy.stats import qmc
+        # Create an array for population of candidate solutions.
+        if qmc_engine == 'latinhypercube':
+            sampler = qmc.LatinHypercube(d=d, seed=seed)
+        elif qmc_engine == 'sobol':        
+            sampler = qmc.Sobol(d=d, seed=seed)
+        elif qmc_engine == 'halton':
+            sampler = qmc.Halton(d=d, seed=seed)
+        else:
+            raise ValueError("qmc_engine",qmc_engine,"is not recognized.")
 
-    # Create an array for population of candidate solutions.
-    if qmc_engine == 'latinhypercube':
-        sampler = qmc.LatinHypercube(d=d, seed=seed)
-    elif qmc_engine == 'sobol':        
-        sampler = qmc.Sobol(d=d, seed=seed)
-    elif qmc_engine == 'halton':
-        sampler = qmc.Halton(d=d, seed=seed)
-    else:
-        raise ValueError("qmc_engine",qmc_engine,"is not recognized.")
-
-    return sampler.random(n=n)
-
+        return sampler.random(n=n)
+    except:
+        print("scipy version mismatch. 'scipy.stat.qmc' is not imported. Using custom halton seqeunce instead")
+        return _get_sobol_sample(n,d)
+              
 
             
 def proximal_ordered_init_sampler(n,
@@ -491,7 +585,7 @@ def proximal_ordered_init_sampler(n,
     x0 = np.atleast_2d(x0)
     _,xd = x0.shape
     assert xd==d
-    samples = list(_init_population_qmc(n,d,method,seed)*(bounds[:,1]-bounds[:,0]) + bounds[:,0])
+    samples = list(_init_population_qmc(n,d,method,seed)*(bounds[:,1]-bounds[:,0])[None,:] + bounds[:,0][None,:])
     
     
     ordered_samples = []
