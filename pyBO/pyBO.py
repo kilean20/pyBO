@@ -12,11 +12,14 @@ import concurrent
 
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Type, Union
 
+
 from . import model
 from . import covfunc
 from . import acquisition
 from . import util
 from .BO import BO
+from .BO import runBO
+    
 # from .CBO import CBO
 # import warnings
 # warnings.filterwarnings("ignore")

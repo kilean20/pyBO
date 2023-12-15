@@ -2,7 +2,7 @@ from typing import Callable, Optional
 from scipy.stats import norm, t
 import numpy as np
 import warnings
-from typing import Optional, Union
+from typing import Optional, Dict, Union
 eps = 1e-6
 
 
@@ -40,38 +40,42 @@ def favor_X(
         X_favor = np.atleast_2d(X_favor)
         _,d = X_favor.shape
         for i in range(b):
-            f[i] =   np.mean(C_favor*np.exp(-np.mean((X[i:i+1,-d:]-X_favor)**2/L_favor**2, axis=1)))
+            f[i] = np.mean(C_favor*np.exp(-np.mean((X[i:i+1,-d:]-X_favor)**2/L_favor**2, axis=1)))
     return f
     
 
 def penalize_polarity_change(
     X: np.ndarray,
-    X_current: np.ndarray,
+    X_pending: np.ndarray,
     polarity_penalty = 0.,
     ) -> np.ndarray:
     
     X = np.atleast_2d(X)
-    if polarity_penalty == 0 or polarity_penalty is None or X_current is None :
+    if polarity_penalty == 0 or polarity_penalty is None or X_pending is None :
         return 0.
     else:
-        X_current = np.atleast_2d(X_current)
-        _,d = X_current.shape
-        return polarity_penalty*np.any(np.logical_and(np.sign(X) != np.sign(X_current),X_current!=0), axis=1)
+        X_pending = np.atleast_2d(X_pending[-1:,:])
+        _,d = X_pending.shape
+        return polarity_penalty*np.any(np.logical_and(np.sign(X) != np.sign(X_pending),X_pending!=0), axis=1)
     
 
 class AcquisitionFunction:
     r"""Abstract base class for acquisition functions.
     """
-    def __init__(self,model=None):
+    def __init__(self,
+                 model = None, 
+                 L2reg: Optional[Dict] = None):
         r"""Constructor for the AcquisitionFunction base class.
         Args:
             model: A fitted surrogate model.
+            L2reg: regularization
         """
 #         super().__init__()
         self.model = model
         # if model is None:
         #     warnings.warn('AcquisitionFunction is initialized without model. Must be specified before call.')    
         self.name = ''
+        self.L2reg = L2reg
         
     def penal_or_favor(self,
         X: np.ndarray, 
@@ -81,8 +85,9 @@ class AcquisitionFunction:
         X_favor: Optional[np.ndarray] = None,
         L_favor: Optional[Union[np.ndarray, float]] = 0.1,
         C_favor: Optional[float] = 0.2,
-        X_current: Optional[np.ndarray] = None,
+        X_pending: Optional[np.ndarray] = None,
         polarity_penalty: Optional[float] = 1.0,
+        L2reg: Optional[Dict] = None,
         **kwargs
         ) -> np.ndarray:
         f = 0.
@@ -90,8 +95,11 @@ class AcquisitionFunction:
             f+= penalize_X(X,X_penal,L_penal,C_penal)
         if X_favor is not None:
             f+= favor_X(X,X_favor,L_favor,C_favor)
-        if X_current is not None:
-            f-= penalize_polarity_change(X,X_current,polarity_penalty)
+        if X_pending is not None:
+            f-= penalize_polarity_change(X,X_pending,polarity_penalty)
+        L2reg = L2reg or self.L2reg
+        if L2reg is not None:
+            f+= penalize_X(X,L2reg['X'],L2reg['L'],L2reg['C'])
         return f
         
 class ExpectedImprovement(AcquisitionFunction):
@@ -120,7 +128,7 @@ class ExpectedImprovement(AcquisitionFunction):
                     X_favor: Optional[np.ndarray] = None,
                     L_favor: Optional[Union[np.ndarray, float]] = 0.1,
                     C_favor: Optional[float] = 0.2,
-                    X_current: Optional[np.ndarray] = None,
+                    X_pending: Optional[np.ndarray] = None,
                     polarity_penalty: Optional[float] = 1.0,
                     **kwargs) -> np.ndarray:
 #         self.best_y = best_y or self.best_y
@@ -135,8 +143,8 @@ class ExpectedImprovement(AcquisitionFunction):
             time.sleep(2)
             raise RuntimeError("NaN!!",z)
         f = (mean - best_y) * norm.cdf(z) + var**0.5 * norm.pdf(z)
-                 
-        return f + self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_current,polarity_penalty)
+            
+        return f + self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_pending,polarity_penalty)
     
     
 class UpperConfidenceBound(AcquisitionFunction):
@@ -165,7 +173,7 @@ class UpperConfidenceBound(AcquisitionFunction):
                     X_favor: Optional[np.ndarray] = None,
                     L_favor: Optional[Union[np.ndarray, float]] = 0.1,
                     C_favor: Optional[float] = 0.2,
-                    X_current: Optional[np.ndarray] = None,
+                    X_pending: Optional[np.ndarray] = None,
                     polarity_penalty: Optional[float] = 1.0,
                     **kwargs ) -> np.ndarray:
 #         self.beta = beta or self.beta
@@ -177,14 +185,8 @@ class UpperConfidenceBound(AcquisitionFunction):
         mean, var = self.model(X,return_var=True)
         f = mean + (beta*var)**0.5
         
-        return f+ self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_current,polarity_penalty)
+        return f+ self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_pending,polarity_penalty)
 
     
 
-    
-
-      
-            
-        
-    
     

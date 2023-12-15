@@ -93,7 +93,7 @@ class GaussianProcess(Model):
             d[param] = self.covfunc.__dict__[param]
         return d
 
-    def fit(self, x, y):
+    def fit(self, x, y, verbose=False):
         """
         Fits a Gaussian Process regressor
 
@@ -132,7 +132,8 @@ class GaussianProcess(Model):
             k = np.eye(len(self.K))
             dk = 2e-6 # 0.01*np.sum(k*self.K)/len(self.K)
             while(True):
-                print('!!!! not invertible adding constant diangonal noise.....')
+                if verbose:
+                    print('GP kernal matrix is not invertible numerically. Adding constant diangonal noise.....')
                 try:
                     self.K += k*dk
                     self.L = cholesky(self.K).T

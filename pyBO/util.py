@@ -58,6 +58,16 @@ class dictClass(dict):
       if self[k]==val:
         return 
     
+class timeout():
+    def __init__(self,t):
+        self.t0 = time.monotonic()
+        self.t = t
+    def __call__(self):
+        if time.monotonic() - self.t0 > self.t:
+            return True
+        else:
+            return False
+    
 
 class OptimizationTimeoutError(Exception):
     r"""Exception raised when optimization times out."""
@@ -81,6 +91,29 @@ class NotYetImplementedError(Exception):
     def __init__(self) -> None:
         pass
 
+
+def unique_xy(x, y=None):
+    _, indices, counts = np.unique(x, axis=0, return_inverse=True, return_counts=True)
+    duplicate_indices = np.where(counts > 1)[0]
+    duplicate_rows_indices = [np.where(indices == i)[0] for i in duplicate_indices]
+    
+    if y is not None:
+        if len(duplicate_rows_indices)>0:
+            print("x data has duplicates. will remove duplicates and will average corresponding ys")
+        for duplicate_rows in duplicate_rows_indices:
+            print(f"x: {x[duplicate_rows[0]]} corresponding ys: {y[duplicate_rows].flatten()}")
+
+        averaged_y = []
+        for unique_row in np.unique(x, axis=0):
+            duplicate_rows = np.where((x == unique_row).all(axis=1))[0]
+            averaged_y.append(np.mean(y[duplicate_rows]))
+
+        averaged_y = np.array(averaged_y).reshape(-1, 1)
+
+        return np.unique(x, axis=0), averaged_y
+    else:
+        return np.unique(x, axis=0), None
+    
 
 def minimize_with_timeout(
     fun: Callable,
@@ -216,7 +249,7 @@ def minimize_with_restarts(
                   'fail':{'x':[],'fun':[]}}
     for i_restart in range(num_restarts):
         if len(candidates['success']['fun'])>2 and optmization_stopping_criteria is not None:
-            if optmization_stopping_criteria():
+            if np.any([stop() for stop in optmization_stopping_criteria]):
                 break
             
         if timeout_sec is not None:
@@ -243,8 +276,16 @@ def minimize_with_restarts(
                     timeout_sec_,)
         
         if result.success:
+            if type(result.x) is not np.ndarray:
+                print('result.x',result.x)
             assert type(result.x) == np.ndarray
-            assert type(result.fun) == float
+            if type(result.fun) is not float:
+                assert result.fun.shape==(1,)
+#                 print('result.fun',result.fun)
+#                 print('result.fun.shape',result.fun.shape)
+                result.fun = float(result.fun[0])
+            else:
+                assert type(result.fun) == float
             candidates['success']['x'].append(result.x)
             candidates['success']['fun'].append(result.fun)
         else:
@@ -325,9 +366,8 @@ def plot_2D_projection(
                         dim_xaxis = 0,
                         dim_yaxis = 1,
                         grid_ponits_each_dim = 25, 
-                        project_minimum = False,
-                        project_maximum = False,
-                        project_mean = False,
+                        project_maximum = True,
+                        project_mode = None,
                         fixed_values_for_each_dim = None, 
                         overdrive = False,
                         fig = None,
@@ -346,7 +386,19 @@ def plot_2D_projection(
         else:
             fixed_values_for_each_dim = {}
             
-        dim = len(bounds)    
+        dim = len(bounds)  
+        
+        project_minimum = False
+        project_mean = False
+        if project_mode is not None:
+            if project_mode in ['MAX', 'max', 'Max']:
+                project_maximum = True
+            elif project_mode in ['MIN', 'min', 'Min']:
+                project_minimum = True
+                project_maximum = False
+            elif project_mode in ['MEAN', 'mean', 'Mean','Average', 'Ave', 'ave']:
+                project_mean = True,
+                project_maximum = False
         if dim > 2+n_fixed:
             assert project_minimum + project_maximum + project_mean == 1
         
@@ -575,8 +627,8 @@ def _init_population_qmc(n, d, qmc_engine='sobol',seed=None):
 def proximal_ordered_init_sampler(n,
                                   bounds,
                                   x0,
-                                  ramping_rate,
-                                  polarity_change_time=10,
+                                  ramping_rate=None,
+                                  polarity_change_time=None,
                                   method='sobol',seed=None):
     if n==0:
         return None
@@ -584,12 +636,40 @@ def proximal_ordered_init_sampler(n,
     d = len(bounds)
     x0 = np.atleast_2d(x0)
     _,xd = x0.shape
+    assert _==1
     assert xd==d
     samples = list(_init_population_qmc(n,d,method,seed)*(bounds[:,1]-bounds[:,0])[None,:] + bounds[:,0][None,:])
+    return order_samples( samples,
+                          x0=x0,
+                          ramping_rate=ramping_rate,
+                          polarity_change_time=polarity_change_time)
     
+#     ordered_samples = []
+#     x0_ = x0
+#     while len(ordered_samples)<n:
+#         pop = np.array(samples)
+#         distance = polarity_change_time*np.any(np.sign(pop) != np.sign(x0_), axis=1) + np.max( np.abs(pop-x0_)/ramping_rate, axis=1)
+#         ordered_samples.append(samples.pop(np.argmin(distance)))
+#         x0_ = ordered_samples[-1]
+        
+#     return np.array(ordered_samples)   
+
+
+def order_samples(samples,
+                  x0,
+                  ramping_rate=None,
+                  polarity_change_time=None):
     
     ordered_samples = []
-    x0_ = x0
+    x0_ = np.atleast_2d(x0)
+    _,d = x0_.shape
+    assert _ == 1
+    samples = list(samples)
+    n = len(samples)
+    if ramping_rate is None:
+        ramping_rate = np.ones(d)
+    polarity_change_time = polarity_change_time or 15
+    
     while len(ordered_samples)<n:
         pop = np.array(samples)
         distance = polarity_change_time*np.any(np.sign(pop) != np.sign(x0_), axis=1) + np.max( np.abs(pop-x0_)/ramping_rate, axis=1)
