@@ -95,24 +95,30 @@ class NotYetImplementedError(Exception):
 def unique_xy(x, y=None):
     _, indices, counts = np.unique(x, axis=0, return_inverse=True, return_counts=True)
     duplicate_indices = np.where(counts > 1)[0]
-    duplicate_rows_indices = [np.where(indices == i)[0] for i in duplicate_indices]
+    duplicate_rows_indices = np.array([np.where(indices == i)[0] for i in duplicate_indices])
+#     print("duplicate_indices",duplicate_indices)
+#     print("duplicate_rows_indices",duplicate_rows_indices)
     
-    if y is not None:
-        if len(duplicate_rows_indices)>0:
-            print("x data has duplicates. will remove duplicates and will average corresponding ys")
-        for duplicate_rows in duplicate_rows_indices:
-            print(f"x: {x[duplicate_rows[0]]} corresponding ys: {y[duplicate_rows].flatten()}")
+    if len(duplicate_rows_indices)>0:
+        print("x data has duplicates. will remove duplicates and will average corresponding ys")
+        uniq_x = []
+        uniq_y = []
+        for i,x_ in enumerate(x):
+            if i in duplicate_rows_indices.flatten():
+                for idups in duplicate_rows_indices:
+                    if i==idups[0]:
+                        uniq_x.append(x_)
+                        if y is not None:
+                            uniq_y.append(np.mean(y[idups]))
+            else:
+                uniq_x.append(x_)
+                if y is not None:
+                    uniq_y.append(y.flatten()[i])
+        x = np.array(uniq_x)
+        if y is not None:
+            y = np.array(uniq_y)
+    return x, y
 
-        averaged_y = []
-        for unique_row in np.unique(x, axis=0):
-            duplicate_rows = np.where((x == unique_row).all(axis=1))[0]
-            averaged_y.append(np.mean(y[duplicate_rows]))
-
-        averaged_y = np.array(averaged_y).reshape(-1, 1)
-
-        return np.unique(x, axis=0), averaged_y
-    else:
-        return np.unique(x, axis=0), None
     
 
 def minimize_with_timeout(
@@ -124,7 +130,7 @@ def minimize_with_timeout(
     hessp: Optional[Callable] = None,
     bounds: Optional[Union[Sequence[Tuple[float, float]], optimize.Bounds]] = None,
     constraints=(),  # Typing this properly is a s**t job
-    tol: Optional[float] = None,
+    tol: Optional[float] = 1e-3,
     callback: Optional[Callable] = None,
     options: Optional[Dict[str, Any]] = None,
     timeout_sec: Optional[float] = None,
@@ -188,6 +194,17 @@ def minimize_with_timeout(
             callback=wrapped_callback,
             options=options,
         )
+#         if jac is None:
+#             jac = '2-point'
+#         bounds = np.array(bounds)
+#         return optimize.least_squares(
+#             fun=fun,
+#             x0=x0,
+#             jac=jac,
+#             bounds=bounds,
+#             xtol=tol,
+# #             options=options,
+#         )
     except OptimizationTimeoutError as e:
         msg = f"Optimization timed out after {e.runtime} seconds."
         current_fun, *_ = fun(e.current_x, *args)
@@ -202,7 +219,6 @@ def minimize_with_timeout(
         )
 
     
-     
                 
 def progressbar(it, prefix="", size=40, out=sys.stdout): # Python3.6+
     count = len(it)

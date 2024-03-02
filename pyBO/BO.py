@@ -72,30 +72,30 @@ def runBO(
     
     bounds = np.atleast_2d(bounds)
     ndim, _ = bounds.shape
+    if polarity_change_time == 0:
+        polarity_penalty = 0 
+        
     
     if x0 is None:
         assert y0 is None
         x0 = np.atleast_2d(0.5*(bounds[:,0]+bounds[:,1]))
 #         print("bounds",bounds)
 #         print("x0.shape",x0.shape)
-        y0 = func_obj_batched(x0)
     else:
         x0 = np.atleast_2d(x0)
-        if y0 is not None:
-            y0 = np.atleast_2d(y0)
-        x0, y0 = util.unique_xy(x0,y0)
-        if y0 is None:
-            y0 = np.atleast_2d(func_obj_batched(x0))
-    assert x0.ndim == y0.ndim == 2
-    assert y0.shape[1] == 1
-    assert x0.shape[0] == y0.shape[0]
-                
-    if polarity_change_time == 0:
-        polarity_penalty = 0 
+        assert x0.shape[1] == ndim
+        
+    if y0 is None:
+        n_y0 = 0
+    else:
+        y0 = np.array(y0).reshape(-1,1)
+        assert x0.shape[0] == y0.shape[0]
+        n_y0 = y0.shape[0]
         
     Y_pending_future = None
    
     if len(x0) < n_init:
+ 
         train_x = util.proximal_ordered_init_sampler(
             n_init-len(x0),
             bounds=bounds,
@@ -104,18 +104,28 @@ def runBO(
             polarity_change_time=polarity_change_time, 
             method='sobol',
             seed=None)
-        train_y = func_obj_batched(train_x[:-batch_size])        
-        X_pending = train_x[-batch_size:]
+    
+        n_remain =  min(n_init - len(x0),batch_size)
+        X_pending = train_x[-n_remain:]   
+        train_x = np.vstack((x0,train_x[:-n_remain]))
+        if n_init-n_y0-n_remain > 1:
+            train_y = np.array(func_obj_batched(train_x[n_y0:])).reshape(-1,1)
+            assert len(train_y) == len(train_x-n_y0)
+            if y0 is not None:
+                train_y = np.vstack((y0,train_y))
+        
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         Y_pending_future = executor.submit(func_obj_batched,X_pending)  # asynchronous parallel objective evaluation
-        train_x = np.vstack((x0,train_x[:-batch_size]))
-        train_y = np.vstack((y0,train_y))
+        
     else:
         X_pending = x0[-1:,:]
         train_x = x0
-        train_y = y0
-    
-    
+        if y0 is None:
+            train_y = np.array(func_obj_batched(train_x)).reshape(-1,1)
+            assert len(train_y) == len(train_x)
+        else:
+            train_y = y0
+            
     bo = BO(
             x = train_x, 
             y = train_y,
@@ -132,9 +142,10 @@ def runBO(
     if callbacks is not None:
         for f in callbacks:
             f()
-    
+      
     if Y_pending_future is None:
-        X_pending = bo.query_candidates( batch_size = batch_size,
+        X_pending = bo.query_candidates( batch_size = min(np.ceil(budget-len(bo.x)),batch_size),
+                                         bounds = bounds,
                                          timeout = timeout,
                                          X_pending = X_pending,
                                          ramping_rate = ramping_rate,
@@ -143,12 +154,13 @@ def runBO(
                                         )
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         Y_pending_future = executor.submit(func_obj_batched,X_pending)  # asynchronous parallel objective evaluation
-        budget -= batch_size
+        budget = budget - batch_size
         
     if budget >= len(bo.x) + batch_size:
         X_pending, Y_pending_future= bo.loop( 
                                         n_loop=int(np.ceil((budget-len(bo.x))/batch_size)),
-                                        func_obj = func_obj,
+                                        func_obj = func_obj_batched,
+                                        isfunc_obj_batched = isfunc_obj_batched,
                                         X_pending = X_pending, 
                                         Y_pending_future = Y_pending_future,
                                         batch_size = batch_size,
@@ -312,11 +324,11 @@ class BO:
             print("data is empty. model fit will not proceed")
             return
         
-        if len(self.history)>0:
-            if self.history[-1]['x'].shape == x.shape:
-                if np.all(self.history[-1]['x'] == x):
-                    print('model is most recent. no update needed')
-                    return
+#         if len(self.history)>0:
+#             if self.history[-1]['x'].shape == x.shape:
+#                 if np.all(self.history[-1]['x'] == x):
+#                     print('model is most recent. no update needed')
+#                     return
         
         self.x = x
         self.y = y
@@ -439,6 +451,7 @@ class BO:
                                                            X_pending,polarity_penalty,
                                                            bounds = bounds,
                                                            acquisition=acqu)
+            
             if debug:
                 print("--in pyBO acqu query--")
                 print("  [debug]acquisition_func_args",acquisition_func_args)
@@ -544,6 +557,8 @@ class BO:
 #         ax.scatter(X_pending[:1,0],X_pending[:1,1],c='k')
 #         ax.set_xlim(bounds[0,0],bounds[0,1])
 #         ax.set_ylim(bounds[1,0],bounds[1,1])
+        x1 = np.unique(x1, axis=0)
+
         return  util.order_samples(x1,
                                    x0=X_pending[:1,:],
                                    ramping_rate=ramping_rate,
@@ -555,6 +570,7 @@ class BO:
              func_obj,
              X_pending,
              Y_pending_future,
+             isfunc_obj_batched = False,
              batch_size = None,
              bounds = None,
              acquisition_func=None,
@@ -578,19 +594,22 @@ class BO:
              callbacks = None,
              write_log =False,
              debug = False,
+             update_model = False,
             ):
         
-        def func_obj_batched(x):
-            x = np.atleast_2d(x)
-#             y = np.zeros(len(x))
-            y = np.zeros((len(x),1))
-            for q in range(len(x)):
-                y[q,:] = func_obj(x[q,:])
-            return y
-        
+        if isfunc_obj_batched:
+            func_obj_batched = func_obj
+        else:
+            def func_obj_batched(x):
+                x = np.atleast_2d(x)
+    #             y = np.zeros(len(x))
+                y = np.zeros((len(x),1))
+                for q in range(len(x)):
+                    y[q,:] = func_obj(x[q,:])
+                return y       
  
-        for i_loop in util.progressbar(range(n_loop)):
-#         for i_loop in range(n_loop):
+#         for i_loop in util.progressbar(range(n_loop)):
+        for i_loop in range(n_loop):
             X_pending_new = self.query_candidates(
                                  batch_size =batch_size,
                                  bounds = bounds,
@@ -616,7 +635,7 @@ class BO:
                                  optmization_stopping_criteria=optmization_stopping_criteria,
                                  write_log =write_log,
                                  debug = debug,)
-            
+
 
             # parallel model update
             self.update_model(
@@ -637,10 +656,10 @@ class BO:
             X_pending = X_pending_new
             Y_pending_future = Y_pending_future_new
             
-            
-        self.update_model(X_pending=X_pending,
-                          Y_pending_future = Y_pending_future,
-                          write_log = write_log)
+        if update_model:
+            self.update_model(X_pending=X_pending,
+                              Y_pending_future = Y_pending_future,
+                              write_log = write_log)
         
         return X_pending, Y_pending_future
         
@@ -1045,7 +1064,8 @@ class BO:
                 for i in range(len(X_penal)):
                     # find the proper length scale based on neighboring (of each dim) data 
                     # legnth scale for each dim is nsample-th smallest distance from the choosen point that is X_penal[i,:]
-                    L[i,:] = np.partition(np.abs(X_penal[i:i+1,:]-x),nsample,axis=0)[1:nsample+1,:].mean(axis=0)
+                    tmp = np.partition(np.abs(X_penal[i:i+1,:]-x),nsample,axis=0)[1:nsample+1,:]
+                    L[i,:] = tmp.mean(axis=0) + tmp.std(axis=0)
                     # find neighbor based on the length scale
                     imask = np.argpartition(np.sum( ((X_penal[i:i+1,:]-x)/(L[i:i+1,:]+1e-3))**2,axis=1),nsample)[:nsample+1]
 #                     print('x[imask]',x[imask])
@@ -1072,7 +1092,8 @@ class BO:
                 for i in range(len(X_favor)):
                     # find the proper length scale based on neighboring (of each dim) data 
                     # legnth scale for each dim is nsample-th smallest distance from the choosen point that is X_favor[i,:]
-                    L[i,:] = np.partition(np.abs(X_favor[i:i+1,:]-x),nsample,axis=0)[1:nsample+1,:].mean(axis=0)
+                    tmp = np.partition(np.abs(X_favor[i:i+1,:]-x),nsample,axis=0)[1:nsample+1,:]
+                    L[i,:] = tmp.mean(axis=0) + tmp.std(axis=0)
                     # find neighbor based on the length scale
                     imask = np.argpartition(np.sum( ((X_favor[i:i+1,:]-x)/(L[i:i+1,:]+1e-3))**2,axis=1),nsample)[:nsample+1]
                     C[i,0] = y[imask].max()-y[imask].min()

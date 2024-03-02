@@ -187,6 +187,3 @@ class UpperConfidenceBound(AcquisitionFunction):
         
         return f+ self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_pending,polarity_penalty)
 
-    
-
-    
