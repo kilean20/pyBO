@@ -180,10 +180,17 @@ class UpperConfidenceBound(AcquisitionFunction):
 #         if beta is None:
 #             raise TypeError("beta could not be inferred. UpperConfidenceBound requires beta")
         beta = beta or self.beta
+#         print(kwargs)
         if beta is None:
             beta = 0
         mean, var = self.model(X,return_var=True)
         f = mean + (beta*var)**0.5
+        if 'safe_beta' in kwargs and len(self.model.y)>2: 
+            f += np.clip(mean - (kwargs['safe_beta']*var)**0.5 - self.model.y_95, a_min=None, a_max = 0)
+        if 'TR_var' in kwargs: 
+            TR_var = kwargs['TR_var'] or 0.1
+#             print(TR_var)
+            f -= (beta/TR_var)**0.5*var
         
         return f+ self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_pending,polarity_penalty)
 

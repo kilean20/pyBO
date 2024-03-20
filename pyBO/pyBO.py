@@ -19,6 +19,7 @@ from . import acquisition
 from . import util
 from .BO import BO
 from .BO import runBO
+from .BO import bo_controller
     
 # from .CBO import CBO
 # import warnings

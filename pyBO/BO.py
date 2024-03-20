@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from copy import deepcopy as copy
 import os
@@ -11,6 +12,7 @@ def warn(x):
     return _warn(x,stacklevel=2)   
 
 import concurrent
+from IPython import display
 
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Type, Union
 
@@ -20,10 +22,247 @@ from . import acquisition
 from . import util
 
 # import warnings
-# warnings.filterwarnings("ignore")
 dtype = np.float64
 
 
+class bo_controller:
+    '''
+    control budget, intialization sample, acqusition hyper-parameters, global to local optimization transition etc.
+    This routine requires objFuncGoal instance input 
+    '''
+    def __init__(self,
+                 obj,         #objFuncGoal instance
+                 x0 = None,
+                 n_init = None,
+                 budget = None,
+                 local_optimization = False,
+                 local_bounds = None,
+                 plot_callbacks = [],
+                 ):
+        self.obj    = obj
+        self.bounds = obj.decision_bounds   #obj is objFuncGoals instance
+        self.ndim   = len(self.bounds)
+        self.x0 = x0
+        self.local_optimization = local_optimization
+
+        if x0 is not None:
+            self.x0 = np.array(x0)
+        elif hasattr(obj,'x0'):
+            self.x0 = obj.x0    #obj is objFuncGoals instance
+        if local_optimization:
+            if local_bounds is None:
+                assert self.x0 is not None
+                bounds_diff = self.bounds[:,1] - self.bounds[:,0]
+                local_bounds = np.array(list(zip(self.x0-0.075*bounds_diff, self.x0+0.075*bounds_diff)))
+            else:
+                local_bounds = np.array(local_bounds)
+            assert local_bounds.shape == self.bounds.shape
+            self.local_bounds = local_bounds
+            self.local_bounds_diff = self.local_bounds[:,1] - self.local_bounds[:,0]
+            assert np.all(self.local_bounds_diff>0)
+            self.init_bounds = self.local_bounds
+            if not n_init:
+                n_init = self.ndim
+        else:
+            self.local_bounds_diff = 0.1*(self.bounds[:,1] - self.bounds[:,0])
+            if not n_init:
+                n_init = 8*self.ndim
+                if budget:
+                    if n_init > 0.3*budget:
+                        n_init = int(0.3*budget)
+            self.init_bounds = self.bounds
+        self.n_init = n_init
+
+        print(f"init will random sample with the followings info:")
+        print(f"  n_init: {n_init}")
+#         print(f"  bounds: ")
+        display.display(pd.DataFrame(self.init_bounds, columns=['min','max'], index = obj.decision_CSETs))  
+
+
+        if len(plot_callbacks) == 0:
+            # ===  plots
+            # decision_RD keys
+            kdecisionRD = [
+                [key for key in obj.decision_RDs if ':PSC_'   in key],   #obj is objFuncGoals instance
+                [key for key in obj.decision_RDs if  'SOL_'   in key],
+                [key for key in obj.decision_RDs if ':PSQ_'   in key],
+                [key for key in obj.decision_RDs if ':PHASE_' in key],
+            ]
+            kLefts  =  []
+            for key in obj.decision_RDs:
+                isin = False
+                for l in kdecisionRD:
+                    if key in l:
+                        isin = True
+                if not isin:
+                    kLefts.append(key)
+            kdecisionRD.append(kLefts)
+            kdecisionRD = [l for l in kdecisionRD if len(l)>0]
+
+            # objective_RD keys   
+            kobjectiveRD = [
+                [key for key in obj.objective_RDs if ':XPOS_' in key or ':YPOS_' in key],   #obj is objFuncGoals instance
+                [key for key in obj.objective_RDs if ':PHASE_' in key],
+                [key for key in obj.objective_RDs if ':MAG_' in key],
+                [key for key in obj.objective_RDs if ':AVGPK_' in key or ':CURRENT_' in key or ':PKAVG_' in key],
+            ]
+            kLefts  =  []
+            for key in obj.objective_RDs:
+                isin = False
+                for l in kobjectiveRD:
+                    if key in l:
+                        isin = True
+                if not isin:
+                    kLefts.append(key)
+            kobjectiveRD.append(kLefts)
+            kobjectiveRD = [l for l in kobjectiveRD if len(l)>0]
+            
+            # callbacks for plot
+            plot_callbacks = [obj.plot_time_val(
+                                  history=obj.machineIO.history,
+                                  keys = kdecisionRD + kobjectiveRD
+                                  ),
+                              obj.plot_obj_history(
+                                  obj.history['objectives'],
+                                  title = 'objectives',
+                                  add_y_data = obj.history['objectives']['total'],
+                                  add_y_label = 'total obj'
+                                  )
+                             ] 
+        self.plot_callbacks = plot_callbacks
+        def obj_w_plot(x):
+            return obj(x,callbacks=self.plot_callbacks)
+        self.obj_w_plot = obj_w_plot
+    
+    def init(self,
+             n_init = None,
+             init_bounds = None):
+        
+        if hasattr(self,'bo'):
+            warn('bo is already initialized.')
+            return
+        
+        n_init = n_init or self.n_init
+        if init_bounds is None:
+            init_bounds = self.init_bounds
+        self.bo, self.X_pending, self.Y_pending_future = runBO(
+                                                            self.obj_w_plot,  
+                                                            bounds = init_bounds,
+                                                            n_init = n_init,
+                                                            x0 = self.x0,
+                                                            budget = n_init+1,
+                                                            batch_size=1,
+                                                            )
+            
+    def optimize(self,
+                budget,
+                global_opt_budget = None):
+        if budget < len(self.bo.y):
+            warn(f'budget {budget} already exhausted')
+            return
+               
+        # global optim
+        if not self.optimize_global:
+            global_opt_budget = min( global_opt_budget or int(0.33*budget), budget - len(self.bo.y))
+            if global_opt_budget>0:
+                def beta_scheduler(n,rate=global_opt_budget):
+                    return 4+5*max(1 - n/rate,0)
+                self.global_optimization(global_opt_budget, beta_scheduler = beta_scheduler)
+            
+        # local optim    
+        remianing_budget = budget - len(self.bo.y) - self.ndim
+        if remianing_budget>0:
+            def beta_scheduler(n,rate=remianing_budget):
+                return 1+8*max(1 - n/rate,0)
+            self.optimize_local(remianing_budget, beta_scheduler = beta_scheduler)
+            
+        # fine tune
+        self.fine_tune(self.ndim)
+        self.bo.update_model(X_pending=self.X_pending,
+                             Y_pending_future = self.Y_pending_future)
+        for f in self.plot_callbacks:
+            f.close()
+            
+        fig,ax = plt.subplots(figsize=(4,2),dpi=96)
+        self.bo.plot_obj_history(ax=ax, plot_best_only=True)
+        ymin,ymax = ax.get_ylim()
+        ax.vlines(self.n_init,ymin,ymax,color='k')
+        
+    def optimize_global(self,
+                        niter,
+                        bounds=None,
+                        beta_scheduler=None,
+                        ):
+        acquisition_func_args = None
+        if bounds is None:
+            bounds = self.bounds
+        if beta_scheduler is None:
+            def beta_scheduler(n,rate=niter):
+                return 4+5*max(1 - n/rate,0)
+
+        for i in range(niter): 
+            if beta_scheduler is not None:
+                acquisition_func_args = {'beta':beta_scheduler(i)}
+            self.X_pending, self.Y_pending_future= self.bo.loop( 
+                n_loop=1,
+                func_obj = self.obj_w_plot, 
+                bounds = bounds,
+                acquisition_func_args = acquisition_func_args,
+                X_pending = self.X_pending, 
+                Y_pending_future = self.Y_pending_future,
+                )
+            
+    def optimize_local(self,
+                       niter,
+                       local_bounds_diff=None,
+                       beta_scheduler=None,
+                       ):
+        acquisition_func_args = None
+        if local_bounds_diff is None:
+            local_bounds_diff = self.local_bounds_diff
+            
+        if beta_scheduler is None:
+            def beta_scheduler(n,rate=niter):
+                return 1+8*max(1 - n/rate,0)
+            
+        for i in range(niter): 
+            x_best,y_best = self.bo.best_sofar()
+            bounds = np.array(list(zip(x_best-local_bounds_diff, x_best+local_bounds_diff)))
+            if beta_scheduler is not None:
+                acquisition_func_args = {'beta':beta_scheduler(i)}
+            self.X_pending, self.Y_pending_future= self.bo.loop( 
+                n_loop=1,
+                func_obj = self.obj_w_plot,  
+                bounds = bounds,
+                acquisition_func_args = acquisition_func_args,
+                X_pending = self.X_pending, 
+                Y_pending_future = self.Y_pending_future,
+                )
+    
+    def fine_tune(self,niter,
+                  local_bounds_diff=None,
+                  ):
+        
+        if local_bounds_diff is None:
+            local_bounds_diff = self.local_bounds_diff
+        for i in range(niter):
+            x_best,y_best = self.bo.best_sofar()
+            bounds = np.array(list(zip(x_best-self.local_bounds_diff, x_best+self.local_bounds_diff)))
+            acquisition_func_args = {'beta':0.01}
+            self.X_pending, self.Y_pending_future= self.bo.loop( 
+                n_loop=1,  # number of additional optimization interation
+                func_obj = self.obj_w_plot,
+                bounds = bounds,
+                acquisition_func_args = acquisition_func_args,
+                X_pending = self.X_pending, 
+                Y_pending_future = self.Y_pending_future,
+                batch_size = 1,
+                C_penal = 0,
+                C_favor = 0,
+                polarity_penalty = 0,
+                )
+    
+        
 def runBO(
      func_obj,
      bounds,
@@ -51,7 +290,7 @@ def runBO(
      noise_constraint = None,
      path="./log/",
      tag="",
-     write_log = True,
+     write_log = False,
      callbacks = None,
 #      plot_history = False,
 #      ax = None,
@@ -185,14 +424,14 @@ class BO:
                  bounds=None,
                  noise_constraint = None,
                  load_log_fname='',
-                 batch_size = None,
+                 batch_size = 1,
                  acquisition_func = None,
                  acquisition_optimize_options = None,
                  scipy_minimize_options = None,
                  prior_mean_model = None,
                  path="./log/",
                  tag="",
-                 write_log = True
+                 write_log = False,
                 ):
         
         if load_log_fname != '':
@@ -243,7 +482,7 @@ class BO:
             raise NotYetImplementedError("pyBO does not support 'noise_constraint' yet. botorch can support this functionality")
             
             
-        batch_size = batch_size or 1
+        self.batch_size = batch_size or 1
 #         if batch_size != 1:
 #             raise NotYetImplementedError("pyBO support batch_size=1 only yet. botorch can support this functionality")
                  
@@ -280,7 +519,7 @@ class BO:
                      x=None,y=None,yvar=None,
                      X_pending=None, Y_pending_future=None,
                      noise_constraint=None,
-                     write_log=True,
+                     write_log=False,
                      append_hist=True,
                      debug = False):
 #                          , write_gp_on_grid=False, grid_ponits_each_dim=25):
@@ -296,7 +535,8 @@ class BO:
             x = self.x
             y = self.y
             yvar = self.yvar
-        else:
+            
+        if y is not None:
             x = np.atleast_2d(x).astype(dtype)
             y = np.array(y,dtype=dtype).reshape(-1, 1)
             if yvar is not None:
@@ -313,8 +553,12 @@ class BO:
             assert x1 is not None and y1 is not None
             x1 = np.atleast_2d(x1).astype(dtype)
             y1 = np.array(y1,dtype=dtype).reshape(-1, 1)
-            x = np.concatenate((x,x1), axis=0)
-            y = np.concatenate((y,y1), axis=0)
+            if x is None:
+                x = x1
+                y = y1
+            else:
+                x = np.concatenate((x,x1), axis=0)
+                y = np.concatenate((y,y1), axis=0)
             if yvar is not None:
                 assert y1var is not None
                 y1var = np.array(y1var,dtype=dtype).reshape(-1, 1)
@@ -395,7 +639,7 @@ class BO:
                          ramping_rate = None,
                          polarity_change_time = None,
                          optmization_stopping_criteria = None,
-                         write_log =True,
+                         write_log =False,
                          debug = False,
                          ):
                
@@ -806,13 +1050,13 @@ class BO:
                                  dim_yaxis = 1,
                                  bounds = None,
                                  grid_ponits_each_dim = 25, 
-                                 project_maximum = False,
+                                 project_maximum = True,
                                  project_mode = None,
                                  fixed_values_for_each_dim = None, 
                                  overdrive = False,
                                  fig = None,
                                  ax = None,
-                                 colarbar = True,
+                                 colorbar = True,
                                  dtype = dtype):
         '''
         fixed_values_for_each_dim: dict of key: dimension, val: value to fix for that dimension
@@ -861,7 +1105,7 @@ class BO:
             return model(x,return_var=False)
 
         if ax is None:
-            fig, ax = plt.subplots(figsize=(3.5,3))
+            fig, ax = plt.subplots(figsize=(3.5,3),dpi=96)
             
         util.plot_2D_projection(
                         func=func,
@@ -875,7 +1119,7 @@ class BO:
                         overdrive=overdrive,
                         fig=fig,
                         ax=ax,
-                        colarbar=colarbar,
+                        colorbar=colorbar,
                         dtype=dtype)
                          
         ax.scatter(x [:,dim_xaxis],x [:,dim_yaxis],c="b", alpha=0.7,label = "training data")
@@ -905,7 +1149,7 @@ class BO:
                                  overdrive = False,
                                  fig = None,
                                  ax = None,
-                                 colarbar = True,
+                                 colorbar = True,
                                  dtype = dtype):
         '''
         fixed_values_for_each_dim: dict of key: dimension, val: value to fix for that dimension
@@ -918,9 +1162,14 @@ class BO:
         X_penal = None
         X_favor = None
         x1 = None
+        if acquisition_func_args is None:
+            acquisition_func_args = {}
         if n_query>0:
             x1 = self.history[epoch]['x1'][i_query]
-            acquisition_func_args = self.history[epoch]['acquisition_args'][i_query]
+            acquisition_func_args_ = copy(self.history[epoch]['acquisition_args'][i_query])
+            for k,v in acquisition_func_args.items():
+                acquisition_func_args_[k]=v
+            acquisition_func_args = acquisition_func_args_
             if 'X_penal' in acquisition_func_args:
                 X_penal = acquisition_func_args['X_penal']
             if 'X_favor' in acquisition_func_args:     
@@ -977,9 +1226,9 @@ class BO:
                 
 
         if ax is None:
-            fig, ax = plt.subplots(figsize=(3.5,3))
+            fig, ax = plt.subplots(figsize=(3.5,3),dpi=96)
             
-        util.plot_2D_projection(
+        cs = util.plot_2D_projection(
                         func=func,
                         bounds=bounds,
                         dim_xaxis=dim_xaxis,
@@ -991,7 +1240,7 @@ class BO:
                         overdrive=overdrive,
                         fig=fig,
                         ax=ax,
-                        colarbar=colarbar,
+                        colorbar=colorbar,
                         dtype=dtype)
                          
         ax.scatter(x [:,dim_xaxis],x [:,dim_yaxis],c="b", alpha=0.7,label = "training data")
@@ -1002,7 +1251,8 @@ class BO:
         if x1 is not None:
             ax.scatter(x1[:,dim_xaxis],x1[:,dim_yaxis],c="r", alpha=0.7,label = "candidate")
             #print('x1:',x1)
-        ax.legend()                 
+        ax.legend()
+        return cs
                     
             
     def _auto_penal_favor(self,
@@ -1108,7 +1358,7 @@ class BO:
                     
         if X_pending is not None:
             if y is not None:
-                polarity_penalty = 0.18*(np.max(y) - np.min(y))
+                polarity_penalty = 0.2*(np.max(y) - np.min(y))
             else:
                 polarity_penalty = 0
                     

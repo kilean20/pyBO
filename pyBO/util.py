@@ -388,7 +388,7 @@ def plot_2D_projection(
                         overdrive = False,
                         fig = None,
                         ax = None,
-                        colarbar = True,
+                        colorbar = True,
                         dtype = np.float32 ):
         '''
         fixed_values_for_each_dim: dict of key: dimension, val: value to fix for that dimension
@@ -484,17 +484,16 @@ def plot_2D_projection(
             
         iNaN = np.any([np.isnan(x_grid).any(axis=1),np.isnan(y_grid)],axis=0)
         x_grid = x_grid[~iNaN,:]
-        y_grid = y_grid[~iNaN]
-
+        y_grid = y_grid[~iNaN  ]
                            
         if ax is None:
-            fig, ax = plt.subplots(figsize=(3.5,3))
+            fig, ax = plt.subplots(figsize=(3.5,3),dpi=96)
         cs = ax.tricontourf(x_grid[:,dim_xaxis], x_grid[:,dim_yaxis], y_grid, levels=64, cmap="viridis");
-        fig.colorbar(cs,ax=ax,shrink=0.95)
-        
+        if colorbar:
+            fig.colorbar(cs,ax=ax,shrink=0.95)
+            
+        return cs
 
-        
-        
             
 # def _init_population_lhs(nsample, ndim):
 #     """

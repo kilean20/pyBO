@@ -20,6 +20,8 @@ class Model(ABC):
         self.x_std = 1
         self.y_mean = 0
         self.y_std = 1
+#         self.y_max =  1
+#         self.y_min = -1
         self.data_standarize = data_standarize
 
     @abstractmethod
@@ -29,6 +31,9 @@ class Model(ABC):
         y: np.ndarray,
         **kwargs: Any,
     ) -> None:
+#         self.y_min = np.min(self.y)
+#         self.y_max = np.max(self.y)
+#         self.y_95 = np.quantile(self.y,0.9)
         pass  
     
     @abstractmethod
@@ -114,11 +119,18 @@ class GaussianProcess(Model):
             self.x = (x - self.x_mean)/self.x_std
             self.y_mean = np.mean(y)
             self.y_std = np.std(y)
+            if self.y_std == 0:
+                self.y_std = 1
             self.y = (y - self.y_mean)/self.y_std
         else:
             self.x = x
             self.y = y
         self.nsamples = self.x.shape[0]
+#         self.y_min = np.min(self.y)
+#         self.y_max = np.max(self.y)
+        self.y_95 = np.quantile(self.y,0.95)
+        
+        
         if self.optimize:
             grads = None
             if self.usegrads:
@@ -140,6 +152,10 @@ class GaussianProcess(Model):
                     break
                 except:
                     pass
+#         print("self.L")
+#         print(self.L)
+#         print("self.y")
+#         print(self.y)
         self.alpha = solve(self.L.T, solve(self.L, self.y.flatten()))
         self.logp = -.5 * np.dot(self.y.flatten(), self.alpha) - np.sum(np.log(np.diag(self.L))) - self.nsamples / 2 * np.log(
             2 * np.pi)

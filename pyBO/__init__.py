@@ -5,8 +5,9 @@ __version_descriptions__ = {
         '2023-12-14',  
         ],  
     '1.0.1':  [  
-        '2024-03-02',
-        'duplicate data issue resolved in BO initialization'
+        '2024-03-15',
+        'duplicate data issue resolved in BO initialization',
+        'bo_controller',
         ],  
 }
 
