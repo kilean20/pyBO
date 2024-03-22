@@ -72,6 +72,7 @@ class bo_controller:
                         n_init = int(0.3*budget)
             self.init_bounds = self.bounds
         self.n_init = n_init
+        self.budget = budget
 
         print(f"init will random sample with the followings info:")
         print(f"  n_init: {n_init}")
@@ -143,6 +144,7 @@ class bo_controller:
             return
         
         n_init = n_init or self.n_init
+        self.n_init = n_init
         if init_bounds is None:
             init_bounds = self.init_bounds
         self.bo, self.X_pending, self.Y_pending_future = runBO(
@@ -155,38 +157,49 @@ class bo_controller:
                                                             )
             
     def optimize(self,
-                budget,
-                global_opt_budget = None):
-        if budget < len(self.bo.y):
-            warn(f'budget {budget} already exhausted')
-            return
-               
+                niter = None,
+                fine_tune_niter = None):
+        
+        if niter is None:
+            if self.budget:
+                niter = self.budget - self.n_init
+            else:
+                if self.local_optimization:
+                    niter = 10*self.n_init
+                else:
+                    niter =  3*self.n_init
+                warn(f'niter is not provided. will use niter = {niter}')
+        assert niter>1
+        
+        fine_tune_niter = fine_tune_niter or self.ndim
+
         # global optim
         if not self.optimize_global:
-            global_opt_budget = min( global_opt_budget or int(0.33*budget), budget - len(self.bo.y))
-            if global_opt_budget>0:
-                def beta_scheduler(n,rate=global_opt_budget):
+            global_opt_niter = max(int(0.5*(niter - fine_tune_niter)), 1)
+            if global_opt_niter>0:
+                def beta_scheduler(n,rate=global_opt_niter):
                     return 4+5*max(1 - n/rate,0)
-                self.global_optimization(global_opt_budget, beta_scheduler = beta_scheduler)
+                self.global_optimization(global_opt_niter, beta_scheduler = beta_scheduler)
             
         # local optim    
-        remianing_budget = budget - len(self.bo.y) - self.ndim
-        if remianing_budget>0:
-            def beta_scheduler(n,rate=remianing_budget):
+        local_opt_niter = max(int(0.5*(niter - fine_tune_niter)), 1)
+        if local_opt_niter>0:
+            def beta_scheduler(n,rate=local_opt_niter):
                 return 1+8*max(1 - n/rate,0)
-            self.optimize_local(remianing_budget, beta_scheduler = beta_scheduler)
+            self.optimize_local(local_opt_niter, beta_scheduler = beta_scheduler)
             
         # fine tune
-        self.fine_tune(self.ndim)
+        self.fine_tune(fine_tune_niter)
         self.bo.update_model(X_pending=self.X_pending,
                              Y_pending_future = self.Y_pending_future)
+        
         for f in self.plot_callbacks:
             f.close()
             
-        fig,ax = plt.subplots(figsize=(4,2),dpi=96)
-        self.bo.plot_obj_history(ax=ax, plot_best_only=True)
-        ymin,ymax = ax.get_ylim()
-        ax.vlines(self.n_init,ymin,ymax,color='k')
+#         fig,ax = plt.subplots(figsize=(4,2),dpi=96)
+#         self.bo.plot_obj_history(ax=ax, plot_best_only=True)
+#         ymin,ymax = ax.get_ylim()
+#         ax.vlines(self.n_init,ymin,ymax,color='k')
         
     def optimize_global(self,
                         niter,
