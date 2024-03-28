@@ -7,12 +7,22 @@ import datetime
 import pickle
 import time
 import sys
-from warnings import warn as _warn
+# from warnings import warn as _warn
+# def warn(x):
+#     return _warn(x)#,stacklevel=2)   
+
+import warnings
+# from warnings import warn as _warn
+def _warn(message, *args, **kwargs):
+    return 'warning: ' +str(message) + '\n'
+#     return _warn(x,stacklevel=2)  
+
+warnings.formatwarning = _warn
 def warn(x):
-    return _warn(x,stacklevel=2)   
+    return warnings.warn(x)
 
 import concurrent
-from IPython import display
+from IPython.display import display, HTML
 
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Type, Union
 
@@ -35,53 +45,86 @@ class bo_controller:
                  x0 = None,
                  n_init = None,
                  budget = None,
+                 bounds = None,
                  local_optimization = False,
-                 local_bounds = None,
+                 local_bound_size = None,
+                 global_init_bounds_fraction = None,
                  plot_callbacks = [],
                  ):
-        self.obj    = obj
-        self.bounds = obj.decision_bounds   #obj is objFuncGoals instance
+        self.obj = obj
+        if bounds is None:
+            self.bounds = obj.decision_bounds   #obj is objFuncGoals instance
+        else:
+            self.bounds = np.array(bounds)
+            assert self.bounds.ndim == 2
+            
         self.ndim   = len(self.bounds)
-        self.x0 = x0
         self.local_optimization = local_optimization
 
+        if local_bound_size is None:
+            self.local_bound_size = 0.1*(self.bounds[:,1] - self.bounds[:,0])
+        else:
+            self.local_bound_size = np.array(local_bound_size)
+        assert np.all(self.local_bound_size>0)
+        
         if x0 is not None:
-            self.x0 = np.array(x0)
+            x0 = np.array(x0)
+            assert x0.shape == (self.ndim,)
         elif hasattr(obj,'x0'):
-            self.x0 = obj.x0    #obj is objFuncGoals instance
+            x0 = obj.x0    #obj is objFuncGoals instance
+            assert x0.shape == (self.ndim,)
+        self.x0 = x0
+
         if local_optimization:
-            if local_bounds is None:
-                assert self.x0 is not None
-                bounds_diff = self.bounds[:,1] - self.bounds[:,0]
-                local_bounds = np.array(list(zip(self.x0-0.075*bounds_diff, self.x0+0.075*bounds_diff)))
-            else:
-                local_bounds = np.array(local_bounds)
-            assert local_bounds.shape == self.bounds.shape
-            self.local_bounds = local_bounds
-            self.local_bounds_diff = self.local_bounds[:,1] - self.local_bounds[:,0]
-            assert np.all(self.local_bounds_diff>0)
-            self.init_bounds = self.local_bounds
+            if self.x0 is None:
+                raise ValueError('x0 must be provided to start local optimization from begining')   
+            local_min   = np.clip(self.x0 -0.5*self.local_bound_size, a_min=self.bounds[:,0], a_max=None)
+            local_max   = np.clip(self.x0 +0.5*self.local_bound_size, a_min=None, a_max=self.bounds[:,1])
+            self.init_bounds = np.array(list(zip(local_min, local_max)))
             if not n_init:
                 n_init = self.ndim
         else:
-            self.local_bounds_diff = 0.1*(self.bounds[:,1] - self.bounds[:,0])
-            if not n_init:
-                n_init = 8*self.ndim
-                if budget:
-                    if n_init > 0.3*budget:
-                        n_init = int(0.3*budget)
+            n_init = n_init or 8*self.ndim
+            if budget:
+                if n_init > 0.3*budget:
+                    n_init = int(0.3*budget)
+#             global_init_bounds_fraction = global_init_bounds_fraction or 0.8 
+#             x0 = (self.bounds[:,0]+self.bounds[:,1])/2
+#             dx = (self.bounds[:,1]-self.bounds[:,0])*global_init_bounds_fraction
+#             local_min   = np.clip(x0 -0.5*dx, a_min=self.bounds[:,0], a_max=None)
+#             local_max   = np.clip(x0 +0.5*dx, a_min=None, a_max=self.bounds[:,1])
+#             self.init_bounds = np.array(list(zip(local_min, local_max)))
             self.init_bounds = self.bounds
+            
         self.n_init = n_init
         self.budget = budget
-
-        print(f"init will random sample with the followings info:")
-        print(f"  n_init: {n_init}")
+        
+        print(f"init will random sample within the following bounds:")
+#         print(f"  n_init: {n_init}")
 #         print(f"  bounds: ")
-        display.display(pd.DataFrame(self.init_bounds, columns=['min','max'], index = obj.decision_CSETs))  
+        display(pd.DataFrame(self.init_bounds, columns=['min','max'], index = obj.decision_CSETs))  
 
-
+        # ===  plots ======
         if len(plot_callbacks) == 0:
-            # ===  plots
+#             # decision_CSET keys
+#             kdecisionSET = [
+#                 [key for key in obj.decision_CSETs if ':PSC_'   in key],   #obj is objFuncGoals instance
+#                 [key for key in obj.decision_CSETs if  'SOL_'   in key],
+#                 [key for key in obj.decision_CSETs if ':PSQ_'   in key],
+#                 [key for key in obj.decision_CSETs if ':PHASE_' in key],
+#             ]
+#             kLefts  =  []
+#             for key in obj.decision_CSETs:
+#                 isin = False
+#                 for l in kdecisionSET:
+#                     if key in l:
+#                         isin = True
+#                 if not isin:
+#                     kLefts.append(key)
+#             kdecisionSET.append(kLefts)
+#             kdecisionSET = [l for l in kdecisionSET if len(l)>0]
+            
+            
             # decision_RD keys
             kdecisionRD = [
                 [key for key in obj.decision_RDs if ':PSC_'   in key],   #obj is objFuncGoals instance
@@ -121,7 +164,7 @@ class bo_controller:
             # callbacks for plot
             plot_callbacks = [obj.plot_time_val(
                                   history=obj.machineIO.history,
-                                  keys = kdecisionRD + kobjectiveRD
+                                  keys = kdecisionRD + kobjectiveRD #+ kdecisionSET
                                   ),
                               obj.plot_obj_history(
                                   obj.history['objectives'],
@@ -134,6 +177,8 @@ class bo_controller:
         def obj_w_plot(x):
             return obj(x,callbacks=self.plot_callbacks)
         self.obj_w_plot = obj_w_plot
+        self.dp = None
+        
     
     def init(self,
              n_init = None,
@@ -143,7 +188,9 @@ class bo_controller:
             warn('bo is already initialized.')
             return
         
+        self.dp = display(HTML('<center><h3>init BO: random sampling...</h3></center>'),display_id=True)
         n_init = n_init or self.n_init
+        assert n_init>2
         self.n_init = n_init
         if init_bounds is None:
             init_bounds = self.init_bounds
@@ -152,66 +199,77 @@ class bo_controller:
                                                             bounds = init_bounds,
                                                             n_init = n_init,
                                                             x0 = self.x0,
-                                                            budget = n_init+1,
+                                                            budget = n_init,
                                                             batch_size=1,
                                                             )
             
-    def optimize(self,
-                niter = None,
-                fine_tune_niter = None):
+#     def optimize(self,
+#                 niter = None,
+#                 fine_tune_niter = None):
+#         '''
+#         optimize for niter
+#         initiaization must be done priori
+#         '''
         
-        if niter is None:
-            if self.budget:
-                niter = self.budget - self.n_init
-            else:
-                if self.local_optimization:
-                    niter = 10*self.n_init
-                else:
-                    niter =  3*self.n_init
-                warn(f'niter is not provided. will use niter = {niter}')
-        assert niter>1
+#         if niter is None:
+#             if self.budget:
+#                 niter = self.budget - self.n_init
+#             else:
+#                 if self.local_optimization:
+#                     niter = 10*self.n_init
+#                 else:
+#                     niter =  3*self.n_init
+#                 warn(f'niter is not provided. will use niter = {niter}')
+#         assert niter>1
         
-        fine_tune_niter = fine_tune_niter or self.ndim
+#         fine_tune_niter = fine_tune_niter or self.ndim
 
-        # global optim
-        if not self.optimize_global:
-            global_opt_niter = max(int(0.5*(niter - fine_tune_niter)), 1)
-            if global_opt_niter>0:
-                def beta_scheduler(n,rate=global_opt_niter):
-                    return 4+5*max(1 - n/rate,0)
-                self.global_optimization(global_opt_niter, beta_scheduler = beta_scheduler)
+#         # global optim
+#         if not self.local_optimization:
+#             global_opt_niter = max(int(0.5*(niter - fine_tune_niter)), 2)
+#             if global_opt_niter>0:
+#                 def beta_scheduler(n,rate=global_opt_niter):
+#                     return 4+5*max(1 - n/rate,0)
+#                 self.optimize_global(global_opt_niter, beta_scheduler = beta_scheduler)
+#         else:
+#             global_opt_niter = 0
             
-        # local optim    
-        local_opt_niter = max(int(0.5*(niter - fine_tune_niter)), 1)
-        if local_opt_niter>0:
-            def beta_scheduler(n,rate=local_opt_niter):
-                return 1+8*max(1 - n/rate,0)
-            self.optimize_local(local_opt_niter, beta_scheduler = beta_scheduler)
+#         # local optim    
+#         local_opt_niter = max(niter - global_opt_niter -fine_tune_niter, 2)
+#         if local_opt_niter>0:
+#             def beta_scheduler(n,rate=local_opt_niter):
+#                 return 1+8*max(1 - n/rate,0)
+#             self.optimize_local(local_opt_niter, beta_scheduler = beta_scheduler)
             
-        # fine tune
-        self.fine_tune(fine_tune_niter)
-        self.bo.update_model(X_pending=self.X_pending,
-                             Y_pending_future = self.Y_pending_future)
+#         # fine tune
+#         self.fine_tune(fine_tune_niter)
+#         self.bo.update_model(X_pending=self.X_pending,
+#                              Y_pending_future = self.Y_pending_future)
         
-        for f in self.plot_callbacks:
-            f.close()
-            
-#         fig,ax = plt.subplots(figsize=(4,2),dpi=96)
-#         self.bo.plot_obj_history(ax=ax, plot_best_only=True)
-#         ymin,ymax = ax.get_ylim()
-#         ax.vlines(self.n_init,ymin,ymax,color='k')
+#         for f in self.plot_callbacks:
+#             f.close()
+
         
     def optimize_global(self,
                         niter,
                         bounds=None,
                         beta_scheduler=None,
                         ):
+        if self.dp is not None:
+            self.dp.update(HTML('<center><h3>Global BO...</h3></center>'))
+        else:
+            self.dp=display(HTML('<center><h3>Global BO...</h3></center>'),display_id=True)
+        
+        if not hasattr(self,'bo'):
+            raise ValueError('bo is not initializaed')
+            
+        if beta_scheduler in ['Auto','auto']:
+            def beta_scheduler(n):
+                return 4+5*max(1 - n/niter,0)
+        
         acquisition_func_args = None
         if bounds is None:
             bounds = self.bounds
-        if beta_scheduler is None:
-            def beta_scheduler(n,rate=niter):
-                return 4+5*max(1 - n/rate,0)
 
         for i in range(niter): 
             if beta_scheduler is not None:
@@ -227,20 +285,31 @@ class bo_controller:
             
     def optimize_local(self,
                        niter,
-                       local_bounds_diff=None,
+                       local_bound_size=None,
                        beta_scheduler=None,
                        ):
-        acquisition_func_args = None
-        if local_bounds_diff is None:
-            local_bounds_diff = self.local_bounds_diff
+        
+        if self.dp is not None:
+            self.dp.update(HTML('<center><h3>Local BO...</h3></center>'))
+        else:
+            self.dp=display(HTML('<center><h3>Local BO...</h3></center>'),display_id=True)
+        
+        if not hasattr(self,'bo'):
+            raise ValueError('bo is not initializaed')
             
-        if beta_scheduler is None:
-            def beta_scheduler(n,rate=niter):
-                return 1+8*max(1 - n/rate,0)
+        acquisition_func_args = None
+        if local_bound_size is None:
+            local_bound_size = self.local_bound_size
+            
+        if beta_scheduler in ['Auto','auto']:
+            def beta_scheduler(n):
+                return 1+8*max(1 - n/niter,0)
             
         for i in range(niter): 
             x_best,y_best = self.bo.best_sofar()
-            bounds = np.array(list(zip(x_best-local_bounds_diff, x_best+local_bounds_diff)))
+            local_min   = np.clip(x_best -0.5*local_bound_size, a_min=self.bounds[:,0], a_max=None)
+            local_max   = np.clip(x_best +0.5*local_bound_size, a_min=None, a_max=self.bounds[:,1])
+            bounds = np.array(list(zip(local_min, local_max)))   
             if beta_scheduler is not None:
                 acquisition_func_args = {'beta':beta_scheduler(i)}
             self.X_pending, self.Y_pending_future= self.bo.loop( 
@@ -253,14 +322,21 @@ class bo_controller:
                 )
     
     def fine_tune(self,niter,
-                  local_bounds_diff=None,
+                  local_bound_size=None,
                   ):
         
-        if local_bounds_diff is None:
-            local_bounds_diff = self.local_bounds_diff
+        if self.dp is not None:
+            self.dp.update(HTML('<center><h3>Fine Tune...</h3></center>'))
+        else:
+            self.dp=display(HTML('<center><h3>Fine Tune...</h3></center>'),display_id=True)
+        
+        if local_bound_size is None:
+            local_bound_size = self.local_bound_size
         for i in range(niter):
             x_best,y_best = self.bo.best_sofar()
-            bounds = np.array(list(zip(x_best-self.local_bounds_diff, x_best+self.local_bounds_diff)))
+            local_min   = np.clip(x_best -0.5*local_bound_size, a_min=self.bounds[:,0], a_max=None)
+            local_max   = np.clip(x_best +0.5*local_bound_size, a_min=None, a_max=self.bounds[:,1])
+            bounds = np.array(list(zip(local_min, local_max)))
             acquisition_func_args = {'beta':0.01}
             self.X_pending, self.Y_pending_future= self.bo.loop( 
                 n_loop=1,  # number of additional optimization interation
@@ -274,6 +350,19 @@ class bo_controller:
                 C_favor = 0,
                 polarity_penalty = 0,
                 )
+            
+    def finalize(self):
+        
+        if self.dp is not None:
+            self.dp.update(HTML('<center><h3>Finalize...</h3></center>'))
+        else:
+            self.dp=display(HTML('<center><h3>Finalize...</h3></center>'),display_id=True)
+            
+        self.bo.update_model(X_pending=self.X_pending,
+                             Y_pending_future = self.Y_pending_future)
+        
+        self.dp.update(HTML('<center><h3>Done.</h3></center>'))
+        self.dp = None
     
         
 def runBO(
@@ -309,7 +398,7 @@ def runBO(
 #      ax = None,
     ):
     
-    assert n_init >= batch_size
+    assert n_init >= batch_size and n_init > 2
     
     if isfunc_obj_batched:
         def func_obj_batched(x):
@@ -358,13 +447,15 @@ def runBO(
             seed=None)
     
         n_remain =  min(n_init - len(x0),batch_size)
-        X_pending = train_x[-n_remain:]   
-        train_x = np.vstack((x0,train_x[:-n_remain]))
-        if n_init-n_y0-n_remain > 1:
-            train_y = np.array(func_obj_batched(train_x[n_y0:])).reshape(-1,1)
-            assert len(train_y) == len(train_x-n_y0)
-            if y0 is not None:
-                train_y = np.vstack((y0,train_y))
+        X_pending = train_x[-n_remain:]
+        if len(train_x)>n_remain:
+            train_x = np.vstack((x0,train_x[:-n_remain]))
+        else:
+            train_x = x0
+        
+        train_y = np.array(func_obj_batched(train_x[n_y0:])).reshape(-1,1)
+        if y0 is not None:
+            train_y = np.vstack((y0,train_y))
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         Y_pending_future = executor.submit(func_obj_batched,X_pending)  # asynchronous parallel objective evaluation
@@ -377,7 +468,7 @@ def runBO(
             assert len(train_y) == len(train_x)
         else:
             train_y = y0
-            
+
     bo = BO(
             x = train_x, 
             y = train_y,
@@ -754,7 +845,14 @@ class BO:
             result = util.maximize_with_restarts(acqu,bounds=acqu_bounds,
                                                  **acquisition_optimize_options,
                                                  **scipy_minimize_options)
-#             if not hasattr(result,"x"):
+            if not hasattr(result,"x"):
+                if X_pending is not None:
+                    warn('Scipy minimize could not find new candidate. Old candidate will be used instead')
+                    result.x = X_pending[-1,:]
+                else:
+                    warn('Scipy minimize could not find new candidate. Random candidate will be used instead')
+                    result.x = np.random.rand(len(acqu_bounds))*(acqu_bounds[:,1]-acqu_bounds[:,0]) +acqu_bounds[:,0] 
+                    
 #                 print("=== debug ===")
 #                 print("result",result)
 #                 print("acquisition_optimize_options",acquisition_optimize_options)

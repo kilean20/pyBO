@@ -1,4 +1,3 @@
-import warnings
 import sys
 import time
 
@@ -645,8 +644,8 @@ def proximal_ordered_init_sampler(n,
                                   ramping_rate=None,
                                   polarity_change_time=None,
                                   method='sobol',seed=None):
-    if n==0:
-        return None
+    if n<1:
+        raise ValueError('n must be larger than 0') 
     bounds = np.array(bounds,dtype=np.float64)
     d = len(bounds)
     x0 = np.atleast_2d(x0)
@@ -679,8 +678,11 @@ def order_samples(samples,
     x0_ = np.atleast_2d(x0)
     _,d = x0_.shape
     assert _ == 1
-    samples = list(samples)
+    samples = np.atleast_2d(samples)
     n = len(samples)
+    if n == 1:
+        return samples
+    samples = samples.tolist()
     if ramping_rate is None:
         ramping_rate = np.ones(d)
     polarity_change_time = polarity_change_time or 15
@@ -691,4 +693,4 @@ def order_samples(samples,
         ordered_samples.append(samples.pop(np.argmin(distance)))
         x0_ = ordered_samples[-1]
         
-    return np.array(ordered_samples)   
+    return np.array(ordered_samples)

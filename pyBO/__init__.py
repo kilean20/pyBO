@@ -1,4 +1,4 @@
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 __version_descriptions__ = {  
     '1.0.0':  [  
@@ -8,6 +8,10 @@ __version_descriptions__ = {
         '2024-03-15',
         'duplicate data issue resolved in BO initialization',
         'bo_controller',
+        ],  
+    '1.0.2':  [  
+        '2024-03-26',
+        'boundary made hard in bo_controller'
         ],  
 }
 

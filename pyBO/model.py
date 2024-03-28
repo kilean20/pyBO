@@ -300,18 +300,24 @@ class GaussianProcess(Model):
             y_prior = self.prior_mean_model(Xstar).flatten()
         if self.data_standarize:
             Xstar = (Xstar-self.x_mean)/self.x_std
-        kstar = self.covfunc.K(self.x, Xstar).T
-        y = np.dot(kstar, self.alpha)
-        if self.data_standarize:
-            y = y*self.y_std + self.y_mean
+        try:
+            kstar = self.covfunc.K(self.x, Xstar).T
+            y = np.dot(kstar, self.alpha)
+            if self.data_standarize:
+                y = y*self.y_std + self.y_mean
+        except:
+            y = 1e6*np.ones(len(Xstar))
         if self.prior_mean_model is not None:
             y += y_prior
         if return_var:
-            v = solve(self.L, kstar.T)
-            fcov = self.covfunc.K(Xstar, Xstar) - np.dot(v.T, v)
-            fcov = np.diag(fcov)
-            if self.data_standarize:
-                fcov = fcov*self.y_std**2
+            try:
+                v = solve(self.L, kstar.T)
+                fcov = self.covfunc.K(Xstar, Xstar) - np.dot(v.T, v)
+                fcov = np.diag(fcov)
+                if self.data_standarize:
+                    fcov = fcov*self.y_std**2
+            except:
+                fcov = 1e6*np.ones(len(Xstar))
             return y, np.clip(fcov, a_min=eps, a_max=None)
         else:
             return y
