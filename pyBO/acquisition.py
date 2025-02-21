@@ -14,7 +14,9 @@ def penalize_X(
     ) -> np.ndarray:
     
     X = np.atleast_2d(X)
-    b,d = X.shape
+    b,d = X.shape  
+    if b==1:
+        return penalize_X_vectorized(X,X_penal,L_penal,C_penal)
     f = np.zeros(b)
     if X_penal is not None:
         X_penal = np.atleast_2d(X_penal)
@@ -24,15 +26,40 @@ def penalize_X(
     return f
 
 
+def penalize_X_vectorized(
+    X: np.ndarray,
+    X_penal: Optional[np.ndarray] = None,
+    L_penal: Optional[Union[np.ndarray, float]] = 0.1,
+    C_penal: Optional[float] = 0.2,
+) -> np.ndarray:
+    
+    if X_penal is not None:
+        X_penal = np.atleast_2d(X_penal)
+        d = X_penal.shape[1]
+        
+        # Compute the squared differences in a vectorized manner
+        diff_squared = np.mean((X[:, -d:] - X_penal)**2 / L_penal**2, axis=1)
+        
+        # Calculate the penalization function vectorized
+        f = np.array(-np.mean(C_penal * np.exp(-diff_squared)))
+    else:
+        # If no penalty array is provided, return a zero array
+        f = np.zeros(X.shape[0])
+    return f
+
+
+
 def favor_X(         
     X: np.ndarray,
     X_favor: Optional[np.ndarray] = None,
-    L_favor: Optional[Union[np.ndarray, float]] = 0.1,
-    C_favor: Optional[float] = 0.2,
+    L_favor: Optional[Union[np.ndarray, float]] = 0.5,
+    C_favor: Optional[float] = 0.15,
     ) -> np.ndarray:
     
     X = np.atleast_2d(X)
     b,d = X.shape
+    if b==1:
+        return favor_X_vectorized(X,X_favor,L_favor,C_favor)
     f = np.zeros(b)
     if X_favor is not None:
         if f is None:
@@ -42,8 +69,29 @@ def favor_X(
         for i in range(b):
             f[i] = np.mean(C_favor*np.exp(-np.mean((X[i:i+1,-d:]-X_favor)**2/L_favor**2, axis=1)))
     return f
-    
 
+  
+def favor_X_vectorized(
+    X: np.ndarray,
+    X_favor: Optional[np.ndarray] = None,
+    L_favor: Optional[Union[np.ndarray, float]] = 0.5,
+    C_favor: Optional[float] = 0.15,
+) -> np.ndarray:
+    
+    if X_favor is not None:
+        X_favor = np.atleast_2d(X_favor)
+        d = X_favor.shape[1]
+        
+        # Compute the squared differences in a vectorized manner
+        diff_squared = np.mean((X[:, -d:] - X_favor)**2 / L_favor**2, axis=1)
+        
+        # Calculate the favorization function vectorized
+        f = np.array(-np.mean(C_favor * np.exp(-diff_squared)))
+    else:
+        f = np.zeros(X.shape[0])
+    return f
+  
+  
 def penalize_polarity_change(
     X: np.ndarray,
     X_pending: np.ndarray,
@@ -193,4 +241,3 @@ class UpperConfidenceBound(AcquisitionFunction):
             f -= (beta/TR_var)**0.5*var
         
         return f+ self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_pending,polarity_penalty)
-

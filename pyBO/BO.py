@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.distance import pdist
 import pandas as pd
 import matplotlib.pyplot as plt
 from copy import deepcopy as copy
@@ -62,7 +63,7 @@ class bo_controller:
         self.local_optimization = local_optimization
 
         if local_bound_size is None:
-            self.local_bound_size = 0.1*(self.bounds[:,1] - self.bounds[:,0])
+            self.local_bound_size = (max(1/(3+self.ndim), 0.1))*(self.bounds[:,1] - self.bounds[:,0])
         else:
             self.local_bound_size = np.array(local_bound_size)
         assert np.all(self.local_bound_size>0)
@@ -182,7 +183,8 @@ class bo_controller:
     
     def init(self,
              n_init = None,
-             init_bounds = None):
+             init_bounds = None,
+             batch_size = 1):
         
         if hasattr(self,'bo'):
             warn('bo is already initialized.')
@@ -200,7 +202,7 @@ class bo_controller:
                                                             n_init = n_init,
                                                             x0 = self.x0,
                                                             budget = n_init,
-                                                            batch_size=1,
+                                                            batch_size=batch_size,
                                                             )
             
 #     def optimize(self,
@@ -254,6 +256,7 @@ class bo_controller:
                         niter,
                         bounds=None,
                         beta_scheduler=None,
+                        batch_size = 1
                         ):
         if self.dp is not None:
             self.dp.update(HTML('<center><h3>Global BO...</h3></center>'))
@@ -265,7 +268,11 @@ class bo_controller:
             
         if beta_scheduler in ['Auto','auto']:
             def beta_scheduler(n):
-                return 4+5*max(1 - n/niter,0)
+                if n < niter-self.ndim:
+                    return 9
+                else:
+                    return 4
+                # return 4+5*max(1 - n/niter,0)
         
         acquisition_func_args = None
         if bounds is None:
@@ -276,6 +283,7 @@ class bo_controller:
                 acquisition_func_args = {'beta':beta_scheduler(i)}
             self.X_pending, self.Y_pending_future= self.bo.loop( 
                 n_loop=1,
+                batch_size=batch_size,
                 func_obj = self.obj_w_plot, 
                 bounds = bounds,
                 acquisition_func_args = acquisition_func_args,
@@ -285,6 +293,7 @@ class bo_controller:
             
     def optimize_local(self,
                        niter,
+                       batch_size = 1,
                        local_bound_size=None,
                        beta_scheduler=None,
                        ):
@@ -303,17 +312,23 @@ class bo_controller:
             
         if beta_scheduler in ['Auto','auto']:
             def beta_scheduler(n):
-                return 1+8*max(1 - n/niter,0)
+                if n < niter-self.ndim:
+                    return 9
+                else:
+                    return 4
+                # return 1+8*max(1 - n/niter,0)
             
         for i in range(niter): 
             x_best,y_best = self.bo.best_sofar()
             local_min   = np.clip(x_best -0.5*local_bound_size, a_min=self.bounds[:,0], a_max=None)
             local_max   = np.clip(x_best +0.5*local_bound_size, a_min=None, a_max=self.bounds[:,1])
             bounds = np.array(list(zip(local_min, local_max)))   
+            self.local_bounds = bounds
             if beta_scheduler is not None:
                 acquisition_func_args = {'beta':beta_scheduler(i)}
             self.X_pending, self.Y_pending_future= self.bo.loop( 
                 n_loop=1,
+                batch_size=batch_size,
                 func_obj = self.obj_w_plot,  
                 bounds = bounds,
                 acquisition_func_args = acquisition_func_args,
@@ -322,6 +337,7 @@ class bo_controller:
                 )
     
     def fine_tune(self,niter,
+                  batch_size = 1,
                   local_bound_size=None,
                   ):
         
@@ -345,7 +361,7 @@ class bo_controller:
                 acquisition_func_args = acquisition_func_args,
                 X_pending = self.X_pending, 
                 Y_pending_future = self.Y_pending_future,
-                batch_size = 1,
+                batch_size = batch_size,
                 C_penal = 0,
                 C_favor = 0,
                 polarity_penalty = 0,
@@ -789,17 +805,17 @@ class BO:
               
         if X_pending is not None:
             X_pending = np.atleast_2d(X_pending)
-        
         x1 = np.zeros((batch_size,self.ndim),dtype=dtype)
         for q in range(batch_size):   
             def acqu(x):
                 return acquisition_func(x,**acquisition_func_args)
+            if X_penal is None:
+                X_penal = self.x
             penal_favor_acqu_args = self._auto_penal_favor(X_penal,L_penal,C_penal,
                                                            X_favor,L_favor,C_favor,
                                                            X_pending,polarity_penalty,
                                                            bounds = bounds,
                                                            acquisition=acqu)
-            
             if debug:
                 print("--in pyBO acqu query--")
                 print("  [debug]acquisition_func_args",acquisition_func_args)
@@ -811,7 +827,9 @@ class BO:
                 
             def acqu(x):
                 return acquisition_func(x,**acquisition_func_args)
-                
+
+            
+          
             acqu_bounds = np.array(bounds)
             if fixed_values_for_each_dim is not None:
                 def acqu(x,fixed_values_for_each_dim=fixed_values_for_each_dim):
@@ -842,17 +860,37 @@ class BO:
                 acquisition_optimize_options['x0'] = np.clip(X_pending[-1,:] + 0.02*np.random.randn()*(acqu_bounds[:,1]-acqu_bounds[:,0]),
                                                              a_min=acqu_bounds[:,0],
                                                              a_max=acqu_bounds[:,1],)
+
             result = util.maximize_with_restarts(acqu,bounds=acqu_bounds,
                                                  **acquisition_optimize_options,
                                                  **scipy_minimize_options)
+
+            acqu_bounds_diff = acqu_bounds[:,1]-acqu_bounds[:,0]
             if not hasattr(result,"x"):
                 if X_pending is not None:
                     warn('Scipy minimize could not find new candidate. Old candidate will be used instead')
-                    result.x = X_pending[-1,:]
+                    result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
                 else:
                     warn('Scipy minimize could not find new candidate. Random candidate will be used instead')
-                    result.x = np.random.rand(len(acqu_bounds))*(acqu_bounds[:,1]-acqu_bounds[:,0]) +acqu_bounds[:,0] 
-                    
+                    result.x = np.random.rand(len(acqu_bounds))*acqu_bounds_diff +acqu_bounds[:,0] 
+
+            # else:
+            #     bounds_diff = (self.bounds[:,1] - self.bounds[:,0]).reshape(1,-1)
+            #     if  dist_neighbor <= dist10percent:
+            #         if X_pending is not None:
+            #             result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
+            #             result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            #             while np.all(result.x == X_pending[-1,:]):
+            #                 result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
+            #                 result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            #         else:
+            #             result.x = np.random.rand(len(acqu_bounds))*0.5*acqu_bounds_diff +0.5*(acqu_bounds[:,0]+acqu_bounds[:,1])
+            result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            bounds_diff = (self.bounds[:,1] - self.bounds[:,0]).reshape(1,-1)
+            while np.mean(np.abs(result.x - X_pending[-1,:])/bounds_diff) < 1e-6:
+                result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
+                result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            
 #                 print("=== debug ===")
 #                 print("result",result)
 #                 print("acquisition_optimize_options",acquisition_optimize_options)
@@ -1180,7 +1218,7 @@ class BO:
         X_penal = None
         X_favor = None
         x1 = None
-        if n_query>0:
+        if n_query>1:
             x1 = self.history[epoch]['x1'][i_query]
             acquisition_func_args = self.history[epoch]['acquisition_args'][i_query]
             if 'X_penal' in acquisition_func_args:
@@ -1384,7 +1422,8 @@ class BO:
             inbounds = [True]*_
         else:
             bounds = np.array(bounds)
-            inbounds = np.logical_and( np.all(bounds[:,0][None,:] <= x,axis=1),  np.all(x<=bounds[:,1][None,:],axis=1))
+            diff10 = 0.1*(bounds[:,1] - bounds[:,0])
+            inbounds = np.logical_and( np.all(bounds[:,0][None,:]-diff10 <= x,axis=1),  np.all(x<=bounds[:,1][None,:]+diff10, axis=1))
 #             print('inbounds',inbounds)
             x = x[inbounds]
         
@@ -1396,6 +1435,9 @@ class BO:
         if X_penal is None:
             if X_pending is not None:
                 X_penal = X_pending
+        else:
+            if X_pending is not None:
+                X_penal = np.vstack((X_penal,X_pending))
         if X_favor is None:
             if X_pending is not None:
                 X_favor = X_pending[-1:,:]
@@ -1403,6 +1445,7 @@ class BO:
                 X_favor = None
                 
         nsample = min(int(0.5*len(x))+2*self.ndim, len(x)-1)  
+        # nsample = len(x)-1
         if nsample < 2:
             return {
                 "X_penal":None,
@@ -1429,19 +1472,11 @@ class BO:
                     L[i,:] = tmp.mean(axis=0) + tmp.std(axis=0)
                     # find neighbor based on the length scale
                     imask = np.argpartition(np.sum( ((X_penal[i:i+1,:]-x)/(L[i:i+1,:]+1e-3))**2,axis=1),nsample)[:nsample+1]
-#                     print('x[imask]',x[imask])
-#                     print('x',x)
-#                     print('y',y)
-#                     print('y[imask]',y[imask])
                     C[i,0] = y[imask].max()-y[imask].min()
                 if L_penal is None:
-                    L_penal = 0.4*L
+                    L_penal = 0.5*L
                 if C_penal is None:
-                    C_penal = C
-#                 if L_penal is None:
-#                     L_penal = 0.5*L
-#                 if C_penal is None:
-#                     C_penal = 0.4*C
+                    C_penal = 1.5*C
                     
         if X_favor is not None and x is not None:
             X_favor = np.atleast_2d(X_favor)
@@ -1458,14 +1493,10 @@ class BO:
                     # find neighbor based on the length scale
                     imask = np.argpartition(np.sum( ((X_favor[i:i+1,:]-x)/(L[i:i+1,:]+1e-3))**2,axis=1),nsample)[:nsample+1]
                     C[i,0] = y[imask].max()-y[imask].min()
-#                 if L_favor is None:
-#                     L_favor = 5*L
-#                 if C_favor is None:
-#                     C_favor = 0.1*C
                 if L_favor is None:
-                    L_favor = 4*L
+                    L_favor = 5*L
                 if C_favor is None:
-                    C_favor = 0.1*C
+                    C_favor = 0.2*C
                     
         if X_pending is not None:
             if y is not None:

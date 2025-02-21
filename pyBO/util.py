@@ -6,6 +6,17 @@ from scipy import optimize
 from scipy.optimize import OptimizeResult
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
+import contextlib
+import warnings
+
+@contextlib.contextmanager    
+def suppress_outputs():
+    with contextlib.redirect_stdout(io.StringIO()):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            yield
+
+
 Auto = 'Auto'
 
 
@@ -630,8 +641,8 @@ def _init_population_qmc(n, d, qmc_engine='sobol',seed=None):
             sampler = qmc.Halton(d=d, seed=seed)
         else:
             raise ValueError("qmc_engine",qmc_engine,"is not recognized.")
-
-        return sampler.random(n=n)
+        with suppress_outputs():
+            return sampler.random(n=n)
     except:
         print("scipy version mismatch. 'scipy.stat.qmc' is not imported. Using custom halton seqeunce instead")
         return _get_sobol_sample(n,d)
