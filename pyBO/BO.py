@@ -665,7 +665,7 @@ class BO:
         if X_pending is not None:
             assert Y_pending_future is not None
             while(not Y_pending_future.done()):
-                time.sleep(1)
+                time.sleep(0.5)
             x1 = X_pending
             y1 = [Y_pending_future.result()]
 
@@ -887,9 +887,11 @@ class BO:
             #             result.x = np.random.rand(len(acqu_bounds))*0.5*acqu_bounds_diff +0.5*(acqu_bounds[:,0]+acqu_bounds[:,1])
             result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
             bounds_diff = (self.bounds[:,1] - self.bounds[:,0]).reshape(1,-1)
-            while np.mean(np.abs(result.x - X_pending[-1,:])/bounds_diff) < 1e-6:
+            i_try = 1
+            while np.mean(np.abs(result.x - X_pending[-1,:])/bounds_diff) < 1e-6 and i_try < 10:
                 result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
                 result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+                i_try += 1
             
 #                 print("=== debug ===")
 #                 print("result",result)
