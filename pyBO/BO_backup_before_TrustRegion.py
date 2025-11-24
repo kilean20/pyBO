@@ -51,7 +51,6 @@ class bo_controller:
                  local_bound_size = None,
                  global_init_bounds_fraction = None,
                  plot_callbacks = [],
-                 adaptive_local_bounds = True,
                  ):
         self.obj = obj
         if bounds is None:
@@ -180,13 +179,6 @@ class bo_controller:
             return obj(x,callbacks=self.plot_callbacks)
         self.obj_w_plot = obj_w_plot
         self.dp = None
-
-        self.adaptive_local_bounds = adaptive_local_bounds
-        self.tr_failure_counter = 0
-        self.tr_success_counter = 0  
-        self.tr_failure_tolerance = 3
-        self.tr_success_tolerance = 3
-        self.tr_best = -np.inf
         
     
     def init(self,
@@ -212,30 +204,6 @@ class bo_controller:
                                                             budget = n_init,
                                                             batch_size=batch_size,
                                                             )
-        
-        self.tr_best = np.max(self.bo.y)
-
-    def _adjust_local_bounds(self):
-        if self.adaptive_local_bounds:
-            x_best, y_best = self.bo.best_sofar()
-            if y_best > self.tr_best:
-                self.tr_best = y_best
-                self.tr_success_counter += 1
-                self.tr_failure_counter = 0
-            else:
-                self.tr_failure_counter += 1
-                self.tr_success_counter = 0
-            
-            if self.tr_success_counter >= self.tr_success_tolerance:
-                self.local_bound_size = np.minimum(self.local_bound_size*2,
-                                                    (self.bounds[:,1]-self.bounds[:,0]))
-                self.tr_success_counter = 0
-                print(len(self.bo.x),'increase Tr')
-            elif self.tr_failure_counter >= self.tr_failure_tolerance:
-                self.local_bound_size = np.maximum(self.local_bound_size*0.5,
-                                                    0.2*(self.bounds[:,1]-self.bounds[:,0]))
-                self.tr_failure_counter = 0
-                print(len(self.bo.x),'reduce Tr')
             
 #     def optimize(self,
 #                 niter = None,
@@ -345,9 +313,9 @@ class bo_controller:
         if beta_scheduler in ['Auto','auto']:
             def beta_scheduler(n):
                 if n < niter-self.ndim:
-                    return 9.0
+                    return 9
                 else:
-                    return 4.0
+                    return 4
                 # return 1+8*max(1 - n/niter,0)
             
         for i in range(niter): 
@@ -367,7 +335,6 @@ class bo_controller:
                 X_pending = self.X_pending, 
                 Y_pending_future = self.Y_pending_future,
                 )
-            self._adjust_local_bounds()
     
     def fine_tune(self,niter,
                   batch_size = 1,
@@ -641,7 +608,7 @@ class BO:
                  
         if acquisition_func in ["EI","ExpectedImprovement"]:
             self.acquisition_func = acquisition.ExpectedImprovement(self.model)
-        elif acquisition_func in ["UCB","UpperConfidenceBound"] or acquisition_func is None:
+        elif acquisition_func in ["UCB","UpperConfidenceBound"]  or acquisition_func is None:
             self.acquisition_func = acquisition.UpperConfidenceBound(self.model)
 #         elif acquisition_func in ["KG","qKnowledgeGradient","KnowledgeGradient"]:
 #             self.acquisition_func = qKnowledgeGradient
@@ -769,33 +736,51 @@ class BO:
             print(self.history[-2]['acquisition_args'])
             
                             
-    def _prepare_acquisition(self,
-                            acquisition_func=None,
-                            acquisition_func_args=None,
-                            UCB_beta=None,
-                            best_y=None,
-                            fixed_values_for_each_dim=None,
-                            X_penal=None,
-                            L_penal=None,
-                            C_penal=None,
-                            X_favor=None,
-                            L_favor=None,
-                            C_favor=None,
-                            X_pending=None,
-                            polarity_penalty=None,
-                            bounds=None,
-                            debug=False):
+    def query_candidates(self,
+                         batch_size = None,
+                         bounds = None,
+                         acquisition_func=None,
+                         acquisition_func_args=None,
+                         fixed_values_for_each_dim=None,
+                         UCB_beta = None,
+                         best_y = None,
+                         acquisition_optimize_options = None,
+                         scipy_minimize_options = None,
+                         timeout = None,
+                         X_pending = None,
+                         Y_pending_future = None,
+                         X_penal = None, 
+                         L_penal = None,
+                         C_penal = None,
+                         X_favor = None,
+                         L_favor = None,
+                         C_favor = None,
+                         polarity_penalty = None,
+                         ramping_rate = None,
+                         polarity_change_time = None,
+                         optmization_stopping_criteria = None,
+                         write_log =False,
+                         debug = False,
+                         ):
+               
+        start_time = time.monotonic()  
+        batch_size = batch_size or self.batch_size or 1
+    
+        if bounds is None:
+            if self.bounds is None:
+                raise ValueError("bounds could not inferred. provide bounds")
+            bounds = self.bounds
+            
+        if scipy_minimize_options is None:
+            scipy_minimize_options = {}
+    
         if acquisition_func is None:
-            if hasattr(self, 'acquisition_func'):
-                acquisition_func = self.acquisition_func
-            else:
-                raise ValueError("acquisition_func could not be inferred. Provide acquisition_func")
-        
+            acquisition_func = self.acquisition_func
+                
         if acquisition_func_args is None:
             acquisition_func_args = {}
         else:
             acquisition_func_args = copy(acquisition_func_args)
-                    
         if acquisition_func.name == 'ExpectedImprovement':
             if best_y is None:
                 if self.y is not None:
@@ -803,189 +788,176 @@ class BO:
                 else:
                     raise ValueError("'best_y' is required for EI")
             acquisition_func_args['best_y'] = best_y
-        
+            
         if acquisition_func.name == 'UpperConfidenceBound':
             if UCB_beta is not None:
-                acquisition_func_args['beta'] = UCB_beta
-            elif 'beta' not in acquisition_func_args:
-                acquisition_func_args['beta'] = 4.0
-
-        def acqu(x):
-            return acquisition_func(x, **acquisition_func_args)
-
-        if X_pending is not None:
-            X_pending = np.atleast_2d(X_pending)
-
-        if X_penal is not None or X_favor is not None or X_pending is not None:
-            penal_favor_acqu_args = self._auto_penal_favor(X_penal, L_penal, C_penal,
-                                                           X_favor, L_favor, C_favor,
-                                                           X_pending, polarity_penalty,
-                                                           bounds=bounds,
-                                                           acquisition=acqu)
+                beta = UCB_beta
+            elif 'beta' in acquisition_func_args:
+                beta = acquisition_func_args['beta']
+            else:
+                beta = 9.0
+            acquisition_func_args['beta'] = beta
         
-            if debug:
-                print("--in pyBO acqu prepare--")
-                print(" [debug]acquisition_func_args", acquisition_func_args)
-                print(" [debug]penal_favor_acqu_args", penal_favor_acqu_args)
-        
-            acquisition_func_args.update(penal_favor_acqu_args)
-        
-            def acqu(x):
-                return acquisition_func(x, **acquisition_func_args)
-
-        if bounds is None:
-            if self.bounds is None:
-                raise ValueError("bounds could not inferred. provide bounds")
-            bounds = self.bounds
-        acqu_bounds = np.array(bounds)
-        
-        if fixed_values_for_each_dim is not None:
-            def acqu_wrapper(x):
-                inserted_x = self._insert_fixed_values(x, fixed_values_for_each_dim)
-                return float(acqu(inserted_x))
-            
-            acqu = acqu_wrapper
-            acqu_bounds = []
-            for i, b in enumerate(bounds):
-                if i not in fixed_values_for_each_dim.keys():
-                    acqu_bounds.append(b)
-            acqu_bounds = np.array(acqu_bounds)
-        
-        return acqu, acqu_bounds
-
-    def query_candidates(self,
-                        batch_size=None,
-                        bounds=None,
-                        acquisition_func=None,
-                        acquisition_func_args=None,
-                        fixed_values_for_each_dim=None,
-                        UCB_beta=None,
-                        best_y=None,
-                        acquisition_optimize_options=None,
-                        scipy_minimize_options=None,
-                        timeout=None,
-                        X_pending=None,
-                        Y_pending_future=None,
-                        X_penal=None,
-                        L_penal=None,
-                        C_penal=None,
-                        X_favor=None,
-                        L_favor=None,
-                        C_favor=None,
-                        polarity_penalty=None,
-                        ramping_rate=None,
-                        polarity_change_time=None,
-                        optmization_stopping_criteria=None,
-                        write_log=False,
-                        debug=False):
-        
-        start_time = time.monotonic()
-        batch_size = batch_size or self.batch_size or 1
-        
-        if scipy_minimize_options is None:
-            scipy_minimize_options = {}
-
         if acquisition_optimize_options is None:
-            acquisition_optimize_options = {"num_restarts": 100}
+            acquisition_optimize_options = {"num_restarts":100}
         elif not "num_restarts" in acquisition_optimize_options:
             acquisition_optimize_options["num_restarts"] = 100
+              
+        if X_pending is not None:
+            X_pending = np.atleast_2d(X_pending)
+        x1 = np.zeros((batch_size,self.ndim),dtype=dtype)
+        for q in range(batch_size):   
+            def acqu(x):
+                return acquisition_func(x,**acquisition_func_args)
+            if X_penal is None:
+                X_penal = self.x
+            penal_favor_acqu_args = self._auto_penal_favor(X_penal,L_penal,C_penal,
+                                                           X_favor,L_favor,C_favor,
+                                                           X_pending,polarity_penalty,
+                                                           bounds = bounds,
+                                                           acquisition=acqu)
+            if debug:
+                print("--in pyBO acqu query--")
+                print("  [debug]acquisition_func_args",acquisition_func_args)
+                print("  [debug]penal_favor_acqu_args",penal_favor_acqu_args)
+                
+                
+            for key, val in penal_favor_acqu_args.items():
+                acquisition_func_args[key] = val
+                
+            def acqu(x):
+                return acquisition_func(x,**acquisition_func_args)
 
-        x1 = np.zeros((batch_size, self.ndim), dtype=dtype)
-        for q in range(batch_size):
-            acqu, acqu_bounds = self._prepare_acquisition(acquisition_func=acquisition_func,
-                                                        acquisition_func_args=acquisition_func_args,
-                                                        UCB_beta=UCB_beta,
-                                                        best_y=best_y,
-                                                        fixed_values_for_each_dim=fixed_values_for_each_dim,
-                                                        X_penal=X_penal,
-                                                        L_penal=L_penal,
-                                                        C_penal=C_penal,
-                                                        X_favor=X_favor,
-                                                        L_favor=L_favor,
-                                                        C_favor=C_favor,
-                                                        X_pending=X_pending,
-                                                        polarity_penalty=polarity_penalty,
-                                                        bounds=bounds,
-                                                        debug=debug)
             
+          
+            acqu_bounds = np.array(bounds)
+            if fixed_values_for_each_dim is not None:
+                def acqu(x,fixed_values_for_each_dim=fixed_values_for_each_dim):
+                    return float(acquisition_func(self._insert_fixed_values(x,fixed_values_for_each_dim),
+                                                  **acquisition_func_args))
+                acqu_bounds = []
+                for i,b in enumerate(bounds):
+                    if i not in fixed_values_for_each_dim.keys():
+                        acqu_bounds.append(b)
+                acqu_bounds = np.array(acqu_bounds)
+                
             if optmization_stopping_criteria is None:
                 optmization_stopping_criteria = []
-                if batch_size > 1:
+                if batch_size>1:
                     if timeout is None:
                         warn("'timeout' input is recommend for multi-batch candidate querry. By default timeout = 5 sec for each candidate search")
-                        timeout = 5 * batch_size
+                        timeout = 5*batch_size  
                     optmization_stopping_criteria.append(util.timeout(timeout))
                 if Y_pending_future is not None:
                     optmization_stopping_criteria.append(Y_pending_future.done)
                 if len(optmization_stopping_criteria) == 0:
                     optmization_stopping_criteria = None
+
             acquisition_optimize_options['optmization_stopping_criteria'] = optmization_stopping_criteria
             if X_pending is not None:
-                if X_pending.ndim != 2 or len(X_pending) < 1:
-                    print("in acqu query X_pending", X_pending)
-                acquisition_optimize_options['x0'] = np.clip(X_pending[-1, :] + 0.02 * np.random.randn() * (acqu_bounds[:, 1] - acqu_bounds[:, 0]),
-                                                            a_min=acqu_bounds[:, 0],
-                                                            a_max=acqu_bounds[:, 1],)
-                
-            result = util.maximize_with_restarts(acqu, bounds=acqu_bounds,
-                                                **acquisition_optimize_options,
-                                                **scipy_minimize_options)
-            acqu_bounds_diff = acqu_bounds[:, 1] - acqu_bounds[:, 0]
-            if not hasattr(result, "x"):
+                if X_pending.ndim != 2 or len(X_pending)<1:
+                    print("in acqu query X_pending",X_pending)
+                acquisition_optimize_options['x0'] = np.clip(X_pending[-1,:] + 0.02*np.random.randn()*(acqu_bounds[:,1]-acqu_bounds[:,0]),
+                                                             a_min=acqu_bounds[:,0],
+                                                             a_max=acqu_bounds[:,1],)
+
+            result = util.maximize_with_restarts(acqu,bounds=acqu_bounds,
+                                                 **acquisition_optimize_options,
+                                                 **scipy_minimize_options)
+
+            acqu_bounds_diff = acqu_bounds[:,1]-acqu_bounds[:,0]
+            if not hasattr(result,"x"):
                 if X_pending is not None:
                     warn('Scipy minimize could not find new candidate. Old candidate will be used instead')
-                    result.x = X_pending[-1, :] + 0.2 * np.random.randn() * acqu_bounds_diff
+                    result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
                 else:
                     warn('Scipy minimize could not find new candidate. Random candidate will be used instead')
-                    result.x = np.random.rand(len(acqu_bounds)) * acqu_bounds_diff + acqu_bounds[:, 0]
+                    result.x = np.random.rand(len(acqu_bounds))*acqu_bounds_diff +acqu_bounds[:,0] 
 
-            before_clip = result.x.copy()
-            result.x = np.clip(result.x, a_min=acqu_bounds[:, 0], a_max=acqu_bounds[:, 1])
-            bounds_diff = (self.bounds[:, 1] - self.bounds[:, 0]).reshape(1, -1)
+            # else:
+            #     bounds_diff = (self.bounds[:,1] - self.bounds[:,0]).reshape(1,-1)
+            #     if  dist_neighbor <= dist10percent:
+            #         if X_pending is not None:
+            #             result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
+            #             result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            #             while np.all(result.x == X_pending[-1,:]):
+            #                 result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
+            #                 result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            #         else:
+            #             result.x = np.random.rand(len(acqu_bounds))*0.5*acqu_bounds_diff +0.5*(acqu_bounds[:,0]+acqu_bounds[:,1])
+            result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+            bounds_diff = (self.bounds[:,1] - self.bounds[:,0]).reshape(1,-1)
             i_try = 1
-            if X_pending is not None:
-                while np.mean(np.abs(result.x - X_pending[-1, :]) / bounds_diff) < 1e-6 and i_try < 10:
-                    result.x = X_pending[-1, :] + 0.2 * np.random.randn() * acqu_bounds_diff
-                    result.x = np.clip(result.x, a_min=acqu_bounds[:, 0], a_max=acqu_bounds[:, 1])
-                    i_try += 1
-
-            # fig, ax = plt.subplots(figsize=(4, 4))
-            # util.plot_2D_projection(acqu, bounds=acqu_bounds,fig=fig,ax=ax)
-            # ax.scatter(self.x[:,0], self.x[:,1], color='blue', s=10)   
-            # ax.scatter(before_clip[0], before_clip[1], color='orange', s=10)   
-            # ax.scatter(result.x[0], result.x[1], color='red', s=10)   
-            # plt.show()
+            while np.mean(np.abs(result.x - X_pending[-1,:])/bounds_diff) < 1e-6 and i_try < 10:
+                result.x = X_pending[-1,:]  + 0.2*np.random.randn()*acqu_bounds_diff
+                result.x = np.clip(result.x, a_min = acqu_bounds[:,0], a_max = acqu_bounds[:,1])
+                i_try += 1
             
+#                 print("=== debug ===")
+#                 print("result",result)
+#                 print("acquisition_optimize_options",acquisition_optimize_options)
+#                 print("scipy_minimize_options",scipy_minimize_options)
+#                 print("acqu_bounds",acqu_bounds)
+#                 if 'x0' in acquisition_optimize_options:
+#                     print("acqu(acquisition_optimize_options['x0'])",acqu(acquisition_optimize_options['x0']))
             if fixed_values_for_each_dim is None:
-                x1[q, :] = result.x.flatten()
+                x1[q,:] = result.x.flatten()
             else:
-                x1[q, :] = self._insert_fixed_values(result.x, fixed_values_for_each_dim).flatten()
+                x1[q,:] = self._insert_fixed_values(result.x,fixed_values_for_each_dim).flatten()
             
             # polarity_penalty does not keep track of past candidate.
             # strict zero makes polarity_penalty mis-behave
-            is_zero = x1[q, :] == 0
+            is_zero = x1[q,:]==0
             if X_pending is not None:
-                x1[q, is_zero] = 1e-6 * np.sign(X_pending[-1, is_zero])
-            
-            hist = self.history[-1]
+                x1[q,is_zero] = 1e-6*np.sign(X_pending[-1,is_zero])
+                
+            hist = self.history[-1] 
             hist['acquisition'].append(copy(acquisition_func))
             hist['bounds'].append(copy(bounds))
             hist['acquisition_args'].append(copy(acquisition_func_args))
-            hist['x1'].append(copy(x1[q:q+1, :]))
+            hist['x1'].append(copy(x1[q:q+1,:]))
             if write_log:
                 self.write_log(path=self.path, tag=self.tag)
-            hist['query_time'].append(time.monotonic() - start_time)
+            hist['query_time'].append(time.monotonic()-start_time)
+            
             
             if X_pending is None:
-                X_pending = x1[:q+1, :]
+                X_pending = x1[:q+1,:]
             else:
-                X_pending = np.vstack((X_pending, x1[q:q+1, :]))
-        
+                X_pending = np.vstack((X_pending,x1[q:q+1,:]))
+                
+#         return x1
+#         fig,axs = plt.subplots(1,2,figsize=(8,3))
+#         ax=axs[0]
+#         ax.plot(x1[:,0],x1[:,1],alpha=0.5,c='r')
+#         print("before x1.shape",x1.shape)
+#         time.sleep(1)
+#         ax.scatter(x1[:,0],x1[:,1],s=np.linspace(4,16,len(x1)))
+#         ax.hlines(0,bounds[0,0],bounds[0,1],ls='--',color='k')
+#         ax.vlines(0,bounds[1,0],bounds[1,1],ls='--',color='k')
+#         ax.scatter(X_pending[:1,0],X_pending[:1,1],c='k')
+#         ax.set_xlim(bounds[0,0],bounds[0,1])
+#         ax.set_ylim(bounds[1,0],bounds[1,1])
+#         ax=axs[1]
+#         x1 = util.order_samples(x1,
+#                                x0=X_pending[:1,:],
+#                                ramping_rate=ramping_rate,
+#                                polarity_change_time=polarity_change_time)
+#         print("after x1.shape",x1.shape)
+#         time.sleep(1)
+#         ax.plot(x1[:,0],x1[:,1],alpha=0.5,c='r')
+#         ax.scatter(x1[:,0],x1[:,1],s=np.linspace(4,16,len(x1)))
+#         ax.hlines(0,bounds[0,0],bounds[0,1],ls='--',color='k')
+#         ax.vlines(0,bounds[1,0],bounds[1,1],ls='--',color='k')
+#         ax.scatter(X_pending[:1,0],X_pending[:1,1],c='k')
+#         ax.set_xlim(bounds[0,0],bounds[0,1])
+#         ax.set_ylim(bounds[1,0],bounds[1,1])
         x1 = np.unique(x1, axis=0)
-        return util.order_samples(x1,
-                                x0=X_pending[:1, :],
-                                ramping_rate=ramping_rate,
-                                polarity_change_time=polarity_change_time)
+
+        return  util.order_samples(x1,
+                                   x0=X_pending[:1,:],
+                                   ramping_rate=ramping_rate,
+                                   polarity_change_time=polarity_change_time)
     
     
     def loop(self,
@@ -1301,14 +1273,14 @@ class BO:
                         colorbar=colorbar,
                         dtype=dtype)
                          
-        ax.scatter(x [:,dim_xaxis],x [:,dim_yaxis],c="b", s=10, alpha=0.7,label = "training data")
+        ax.scatter(x [:,dim_xaxis],x [:,dim_yaxis],c="b", alpha=0.7,label = "training data")
         
         if X_penal is not None:
-            ax.scatter(X_penal[:,dim_xaxis],X_penal[:,dim_yaxis],s=25, c="r", marker='x', label = "penal") 
+            ax.scatter(X_penal[:,dim_xaxis],X_penal[:,dim_yaxis],s=50, c="r", marker='x', label = "penal") 
         if X_favor is not None:
-            ax.scatter(X_favor[:,dim_xaxis],X_favor[:,dim_yaxis],s=25, c="g", marker='+', label = "favor") 
+            ax.scatter(X_favor[:,dim_xaxis],X_favor[:,dim_yaxis],s=50, c="g", marker='+', label = "favor") 
         if x1 is not None:
-            ax.scatter(x1[:,dim_xaxis],x1[:,dim_yaxis],c="r", s=10, alpha=0.7,label = "candidate")
+            ax.scatter(x1[:,dim_xaxis],x1[:,dim_yaxis],c="r", alpha=0.7,label = "candidate")
             #print('x1:',x1)
         ax.legend()      
         
@@ -1422,13 +1394,13 @@ class BO:
                         colorbar=colorbar,
                         dtype=dtype)
                          
-        ax.scatter(x [:,dim_xaxis],x [:,dim_yaxis],c="b", alpha=0.7, s=10, label = "training data")
+        ax.scatter(x [:,dim_xaxis],x [:,dim_yaxis],c="b", alpha=0.7,label = "training data")
         if X_penal is not None:
-            ax.scatter(X_penal[:,dim_xaxis],X_penal[:,dim_yaxis],s=25, c="r", marker='x', label = "penal") 
+            ax.scatter(X_penal[:,dim_xaxis],X_penal[:,dim_yaxis],s=50, c="r", marker='x', label = "penal") 
         if X_favor is not None:
-            ax.scatter(X_favor[:,dim_xaxis],X_favor[:,dim_yaxis],s=25, c="g", marker='+', label = "favor") 
+            ax.scatter(X_favor[:,dim_xaxis],X_favor[:,dim_yaxis],s=50, c="g", marker='+', label = "favor") 
         if x1 is not None:
-            ax.scatter(x1[:,dim_xaxis],x1[:,dim_yaxis],c="r", s=10, alpha=0.7,label = "candidate")
+            ax.scatter(x1[:,dim_xaxis],x1[:,dim_yaxis],c="r", alpha=0.7,label = "candidate")
             #print('x1:',x1)
         ax.legend()
         return cs
@@ -1443,8 +1415,8 @@ class BO:
                           C_favor,
                           X_pending,
                           polarity_penalty,
-                          acquisition,
-                          bounds = None,):
+                          bounds = None,
+                          acquisition = None):
                           
         x = copy(self.x)
         _,xdim = x.shape
@@ -1456,7 +1428,12 @@ class BO:
             inbounds = np.logical_and( np.all(bounds[:,0][None,:]-diff10 <= x,axis=1),  np.all(x<=bounds[:,1][None,:]+diff10, axis=1))
 #             print('inbounds',inbounds)
             x = x[inbounds]
-                   
+        
+        if acquisition is None:
+            y = self.y[inbounds]
+        else:
+            y = acquisition(x)
+            
         if X_penal is None:
             if X_pending is not None:
                 X_penal = X_pending
@@ -1468,8 +1445,8 @@ class BO:
                 X_favor = X_pending[-1:,:]
             else:
                 X_favor = None
-
-        nsample = min(2*xdim, len(x)-1)
+                
+        nsample = min(int(0.5*len(x))+2*self.ndim, len(x)-1)  
         # nsample = len(x)-1
         if nsample < 2:
             return {
@@ -1494,15 +1471,14 @@ class BO:
                     # find the proper length scale based on neighboring (of each dim) data 
                     # legnth scale for each dim is nsample-th smallest distance from the choosen point that is X_penal[i,:]
                     tmp = np.partition(np.abs(X_penal[i:i+1,:]-x),nsample,axis=0)[1:nsample+1,:]
-                    L[i,:] = tmp.mean(axis=0)
-                    # 8*xdim samples of neighbor based on the length scale
-                    x_samples = np.random.randn(8*xdim,xdim)*(L[i:i+1,:]+1e-3) + X_penal[i:i+1,:]
-                    y = acquisition(x_samples)
-                    C[i,0] = y.max()-y.min()
+                    L[i,:] = tmp.mean(axis=0) + tmp.std(axis=0)
+                    # find neighbor based on the length scale
+                    imask = np.argpartition(np.sum( ((X_penal[i:i+1,:]-x)/(L[i:i+1,:]+1e-3))**2,axis=1),nsample)[:nsample+1]
+                    C[i,0] = y[imask].max()-y[imask].min()
                 if L_penal is None:
                     L_penal = 0.5*L
                 if C_penal is None:
-                    C_penal = C
+                    C_penal = 1.5*C
                     
         if X_favor is not None and x is not None:
             X_favor = np.atleast_2d(X_favor)
@@ -1515,18 +1491,16 @@ class BO:
                     # find the proper length scale based on neighboring (of each dim) data 
                     # legnth scale for each dim is nsample-th smallest distance from the choosen point that is X_favor[i,:]
                     tmp = np.partition(np.abs(X_favor[i:i+1,:]-x),nsample,axis=0)[1:nsample+1,:]
-                    L[i,:] = tmp.mean(axis=0)
-                    # 8*xdim samples of neighbor based on the length scale
-                    x_samples = np.random.randn(8*xdim,xdim)*(L[i:i+1,:]+1e-3) + X_favor[i:i+1,:]
-                    y = acquisition(x_samples)
-                    C[i,0] = y.max()-y.min()
+                    L[i,:] = tmp.mean(axis=0) + tmp.std(axis=0)
+                    # find neighbor based on the length scale
+                    imask = np.argpartition(np.sum( ((X_favor[i:i+1,:]-x)/(L[i:i+1,:]+1e-3))**2,axis=1),nsample)[:nsample+1]
+                    C[i,0] = y[imask].max()-y[imask].min()
                 if L_favor is None:
                     L_favor = 5*L
                 if C_favor is None:
-                    C_favor = 0.5*C
+                    C_favor = 0.2*C
                     
         if X_pending is not None:
-            y = acquisition(x)
             if y is not None:
                 polarity_penalty = 0.2*(np.max(y) - np.min(y))
             else:
@@ -1542,6 +1516,7 @@ class BO:
 #                 "X_pending":X_pending,
 #                 "polarity_penalty":polarity_penalty
 #                })
+
                             
         return {
                 "X_penal":X_penal,

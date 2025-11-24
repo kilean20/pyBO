@@ -4,6 +4,7 @@ import time
 import numpy as np
 from scipy import optimize
 from scipy.optimize import OptimizeResult
+import matplotlib.pyplot as plt
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
 import contextlib

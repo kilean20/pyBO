@@ -156,7 +156,7 @@ class ExpectedImprovement(AcquisitionFunction):
     def __init__(
         self,
         model = None,
-#         best_y = None,
+        best_y = None,
     ):
         r"""Logarithm of single-outcome Expected Improvement (analytic).
         Args:
@@ -165,11 +165,12 @@ class ExpectedImprovement(AcquisitionFunction):
         """
         super().__init__(model=model)
         self.name = 'ExpectedImprovement'
+        self.best_y = best_y or -1
 
 
     def __call__(self, 
                     X: np.ndarray, 
-                    best_y: float,
+                    best_y : Optional[float] = None,
                     X_penal: Optional[np.ndarray] = None,
                     L_penal: Optional[Union[np.ndarray, float]] = 0.1,
                     C_penal: Optional[float] = 0.2,
@@ -179,7 +180,7 @@ class ExpectedImprovement(AcquisitionFunction):
                     X_pending: Optional[np.ndarray] = None,
                     polarity_penalty: Optional[float] = 1.0,
                     **kwargs) -> np.ndarray:
-#         self.best_y = best_y or self.best_y
+        best_y = best_y or self.best_y
 #         if self.best_y is None:
 #             raise TypeError("best_y could not be inferred. ExpectedImprovement requires best_y")
         mean, var = self.model(X,return_var=True)
@@ -233,11 +234,12 @@ class UpperConfidenceBound(AcquisitionFunction):
             beta = 0
         mean, var = self.model(X,return_var=True)
         f = mean + (beta*var)**0.5
-        if 'safe_beta' in kwargs and len(self.model.y)>2: 
-            f += np.clip(mean - (kwargs['safe_beta']*var)**0.5 - self.model.y_95, a_min=None, a_max = 0)
-        if 'TR_var' in kwargs: 
-            TR_var = kwargs['TR_var'] or 0.1
-#             print(TR_var)
-            f -= (beta/TR_var)**0.5*var
+
+#         if 'safe_beta' in kwargs and len(self.model.y)>2: 
+#             f += np.clip(mean - (kwargs['safe_beta']*var)**0.5 - self.model.y_95, a_min=None, a_max = 0)
+#         if 'TR_var' in kwargs: 
+#             TR_var = kwargs['TR_var'] or 0.1
+# #             print(TR_var)
+#             f -= (beta/TR_var)**0.5*var
         
         return f+ self.penal_or_favor(X,X_penal,L_penal,C_penal,X_favor,L_favor,C_favor,X_pending,polarity_penalty)
